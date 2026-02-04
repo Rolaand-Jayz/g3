@@ -1,0 +1,1277 @@
+//! Invariants system for Plan Mode.
+//!
+//! This module implements:
+//! - **Rulespec**: Machine-readable invariants with claims and predicates
+//! - **ActionEnvelope**: Evidence of work done (facts about completed work)
+//!
+//! The rulespec is written as the penultimate step in a plan, and the
+//! action envelope is written as the final step. Together they enable
+//! verification that invariants extracted from the task prompt and
+//! workspace memory are satisfied by the completed work.
+
+use anyhow::{anyhow, Result};
+use serde::{Deserialize, Serialize};
+use serde_yaml::Value as YamlValue;
+use std::collections::HashMap;
+use std::path::PathBuf;
+
+use crate::paths::get_session_logs_dir;
+
+// ============================================================================
+// Invariant Source
+// ============================================================================
+
+/// Source of an invariant - where it was extracted from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InvariantSource {
+    /// Extracted from the user's task prompt
+    TaskPrompt,
+    /// Extracted from persistent workspace memory (AGENTS.md, memory.md)
+    Memory,
+}
+
+impl std::fmt::Display for InvariantSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            InvariantSource::TaskPrompt => write!(f, "task_prompt"),
+            InvariantSource::Memory => write!(f, "memory"),
+        }
+    }
+}
+
+// ============================================================================
+// Rulespec - Machine-readable invariants
+// ============================================================================
+
+/// A claim is a named selector over the action envelope.
+/// 
+/// Claims use a path-like selector syntax to reference values in the
+/// action envelope. For example:
+/// - `csv_importer.capabilities` - selects the capabilities array
+/// - `csv_importer.file` - selects the file path string
+/// - `tests[0]` - selects the first test
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Claim {
+    /// Name of this claim (used by predicates to reference it)
+    pub name: String,
+    /// Selector path into the action envelope (e.g., "csv_importer.capabilities")
+    pub selector: String,
+}
+
+impl Claim {
+    pub fn new(name: impl Into<String>, selector: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            selector: selector.into(),
+        }
+    }
+
+    /// Validate the claim structure.
+    pub fn validate(&self) -> Result<()> {
+        if self.name.trim().is_empty() {
+            return Err(anyhow!("Claim name cannot be empty"));
+        }
+        if self.selector.trim().is_empty() {
+            return Err(anyhow!("Claim selector cannot be empty"));
+        }
+        // Basic selector syntax validation
+        Selector::parse(&self.selector)?;
+        Ok(())
+    }
+}
+
+/// Predicate rule types for evaluating claims.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PredicateRule {
+    /// Value contains the specified element (for arrays) or substring (for strings)
+    Contains,
+    /// Value equals the specified value exactly
+    Equals,
+    /// Value exists (is not null/missing)
+    Exists,
+    /// Value does not exist (is null/missing)
+    NotExists,
+    /// Value is greater than the specified value
+    GreaterThan,
+    /// Value is less than the specified value
+    LessThan,
+    /// Array has at least N elements
+    MinLength,
+    /// Array has at most N elements
+    MaxLength,
+    /// Value matches a regex pattern
+    Matches,
+}
+
+impl std::fmt::Display for PredicateRule {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PredicateRule::Contains => write!(f, "contains"),
+            PredicateRule::Equals => write!(f, "equals"),
+            PredicateRule::Exists => write!(f, "exists"),
+            PredicateRule::NotExists => write!(f, "not_exists"),
+            PredicateRule::GreaterThan => write!(f, "greater_than"),
+            PredicateRule::LessThan => write!(f, "less_than"),
+            PredicateRule::MinLength => write!(f, "min_length"),
+            PredicateRule::MaxLength => write!(f, "max_length"),
+            PredicateRule::Matches => write!(f, "matches"),
+        }
+    }
+}
+
+/// A predicate defines a rule to evaluate against a claim's value.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Predicate {
+    /// Name of the claim this predicate evaluates
+    pub claim: String,
+    /// The rule to apply
+    pub rule: PredicateRule,
+    /// Value to compare against (interpretation depends on rule)
+    /// For `exists`/`not_exists`, this can be omitted
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<YamlValue>,
+    /// Source of this invariant (task_prompt or memory)
+    pub source: InvariantSource,
+    /// Optional notes explaining the invariant or providing nuance
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+}
+
+impl Predicate {
+    pub fn new(
+        claim: impl Into<String>,
+        rule: PredicateRule,
+        source: InvariantSource,
+    ) -> Self {
+        Self {
+            claim: claim.into(),
+            rule,
+            value: None,
+            source,
+            notes: None,
+        }
+    }
+
+    pub fn with_value(mut self, value: YamlValue) -> Self {
+        self.value = Some(value);
+        self
+    }
+
+    pub fn with_notes(mut self, notes: impl Into<String>) -> Self {
+        self.notes = Some(notes.into());
+        self
+    }
+
+    /// Validate the predicate structure.
+    pub fn validate(&self) -> Result<()> {
+        if self.claim.trim().is_empty() {
+            return Err(anyhow!("Predicate claim reference cannot be empty"));
+        }
+        
+        // Some rules require a value
+        match self.rule {
+            PredicateRule::Exists | PredicateRule::NotExists => {
+                // Value is optional for these
+            }
+            _ => {
+                if self.value.is_none() {
+                    return Err(anyhow!(
+                        "Predicate rule '{}' requires a value",
+                        self.rule
+                    ));
+                }
+            }
+        }
+        
+        Ok(())
+    }
+}
+
+/// A rulespec contains claims and predicates that define invariants.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Rulespec {
+    /// Named claims (selectors over the action envelope)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub claims: Vec<Claim>,
+    /// Predicates that evaluate claims
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub predicates: Vec<Predicate>,
+}
+
+impl Rulespec {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn add_claim(&mut self, claim: Claim) {
+        self.claims.push(claim);
+    }
+
+    pub fn add_predicate(&mut self, predicate: Predicate) {
+        self.predicates.push(predicate);
+    }
+
+    /// Validate the rulespec structure.
+    pub fn validate(&self) -> Result<()> {
+        // Validate all claims
+        let mut claim_names = std::collections::HashSet::new();
+        for claim in &self.claims {
+            claim.validate()?;
+            if !claim_names.insert(&claim.name) {
+                return Err(anyhow!("Duplicate claim name: {}", claim.name));
+            }
+        }
+
+        // Validate all predicates and check claim references
+        for predicate in &self.predicates {
+            predicate.validate()?;
+            if !claim_names.contains(&predicate.claim) {
+                return Err(anyhow!(
+                    "Predicate references unknown claim: {}",
+                    predicate.claim
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Check if the rulespec is empty (no claims or predicates).
+    pub fn is_empty(&self) -> bool {
+        self.claims.is_empty() && self.predicates.is_empty()
+    }
+}
+
+// ============================================================================
+// ActionEnvelope - Evidence of work done
+// ============================================================================
+
+/// An action envelope contains facts about completed work.
+/// 
+/// Facts are organized as a flexible YAML structure that can contain:
+/// - File paths modified
+/// - Test names added
+/// - Capabilities implemented
+/// - Libraries added
+/// - Algorithm locations
+/// - Any other evidence of work
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ActionEnvelope {
+    /// Facts about the completed work (flexible YAML structure)
+    #[serde(default)]
+    pub facts: HashMap<String, YamlValue>,
+}
+
+impl ActionEnvelope {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add a fact to the envelope.
+    pub fn add_fact(&mut self, key: impl Into<String>, value: YamlValue) {
+        self.facts.insert(key.into(), value);
+    }
+
+    /// Get a fact by key.
+    pub fn get_fact(&self, key: &str) -> Option<&YamlValue> {
+        self.facts.get(key)
+    }
+
+    /// Check if the envelope is empty.
+    pub fn is_empty(&self) -> bool {
+        self.facts.is_empty()
+    }
+
+    /// Convert the envelope to a YamlValue for selector evaluation.
+    pub fn to_yaml_value(&self) -> YamlValue {
+        // Wrap facts in a root object
+        let mut root = serde_yaml::Mapping::new();
+        for (key, value) in &self.facts {
+            root.insert(YamlValue::String(key.clone()), value.clone());
+        }
+        YamlValue::Mapping(root)
+    }
+}
+
+// ============================================================================
+// Selector - Path-like selector for YAML values
+// ============================================================================
+
+/// A parsed selector for navigating YAML structures.
+/// 
+/// Supports:
+/// - Dot notation: `foo.bar.baz`
+/// - Array indexing: `foo[0]`, `foo[1].bar`
+/// - Wildcards: `foo[*]` (all array elements)
+#[derive(Debug, Clone)]
+pub struct Selector {
+    segments: Vec<SelectorSegment>,
+}
+
+#[derive(Debug, Clone)]
+enum SelectorSegment {
+    /// Access a named field
+    Field(String),
+    /// Access an array index
+    Index(usize),
+    /// Access all array elements (wildcard)
+    Wildcard,
+}
+
+impl Selector {
+    /// Parse a selector string into a Selector.
+    /// 
+    /// Examples:
+    /// - `csv_importer.capabilities` -> [Field("csv_importer"), Field("capabilities")]
+    /// - `tests[0].name` -> [Field("tests"), Index(0), Field("name")]
+    /// - `items[*].id` -> [Field("items"), Wildcard, Field("id")]
+    pub fn parse(s: &str) -> Result<Self> {
+        let s = s.trim();
+        if s.is_empty() {
+            return Err(anyhow!("Selector cannot be empty"));
+        }
+
+        let mut segments = Vec::new();
+        let mut current = String::new();
+        let mut chars = s.chars().peekable();
+
+        while let Some(c) = chars.next() {
+            match c {
+                '.' => {
+                    if !current.is_empty() {
+                        segments.push(SelectorSegment::Field(current.clone()));
+                        current.clear();
+                    }
+                }
+                '[' => {
+                    // Push any pending field
+                    if !current.is_empty() {
+                        segments.push(SelectorSegment::Field(current.clone()));
+                        current.clear();
+                    }
+                    
+                    // Parse index or wildcard
+                    let mut index_str = String::new();
+                    while let Some(&c) = chars.peek() {
+                        if c == ']' {
+                            chars.next();
+                            break;
+                        }
+                        index_str.push(chars.next().unwrap());
+                    }
+                    
+                    if index_str == "*" {
+                        segments.push(SelectorSegment::Wildcard);
+                    } else {
+                        let index: usize = index_str.parse().map_err(|_| {
+                            anyhow!("Invalid array index: {}", index_str)
+                        })?;
+                        segments.push(SelectorSegment::Index(index));
+                    }
+                }
+                ']' => {
+                    return Err(anyhow!("Unexpected ']' in selector"));
+                }
+                _ => {
+                    current.push(c);
+                }
+            }
+        }
+
+        // Push any remaining field
+        if !current.is_empty() {
+            segments.push(SelectorSegment::Field(current));
+        }
+
+        if segments.is_empty() {
+            return Err(anyhow!("Selector produced no segments"));
+        }
+
+        Ok(Self { segments })
+    }
+
+    /// Select values from a YAML value.
+    /// 
+    /// Returns a vector because wildcards can match multiple values.
+    pub fn select(&self, value: &YamlValue) -> Vec<YamlValue> {
+        self.select_recursive(value, 0)
+    }
+
+    fn select_recursive(&self, value: &YamlValue, segment_idx: usize) -> Vec<YamlValue> {
+        if segment_idx >= self.segments.len() {
+            return vec![value.clone()];
+        }
+
+        match &self.segments[segment_idx] {
+            SelectorSegment::Field(name) => {
+                if let YamlValue::Mapping(map) = value {
+                    if let Some(v) = map.get(YamlValue::String(name.clone())) {
+                        return self.select_recursive(v, segment_idx + 1);
+                    }
+                }
+                vec![]
+            }
+            SelectorSegment::Index(idx) => {
+                if let YamlValue::Sequence(seq) = value {
+                    if let Some(v) = seq.get(*idx) {
+                        return self.select_recursive(v, segment_idx + 1);
+                    }
+                }
+                vec![]
+            }
+            SelectorSegment::Wildcard => {
+                if let YamlValue::Sequence(seq) = value {
+                    let mut results = Vec::new();
+                    for item in seq {
+                        results.extend(self.select_recursive(item, segment_idx + 1));
+                    }
+                    return results;
+                }
+                vec![]
+            }
+        }
+    }
+
+    /// Select a single value (returns None if no match or multiple matches).
+    pub fn select_one(&self, value: &YamlValue) -> Option<YamlValue> {
+        let results = self.select(value);
+        if results.len() == 1 {
+            Some(results.into_iter().next().unwrap())
+        } else {
+            None
+        }
+    }
+}
+
+// ============================================================================
+// Predicate Evaluation
+// ============================================================================
+
+/// Result of evaluating a predicate.
+#[derive(Debug, Clone)]
+pub struct PredicateResult {
+    /// Whether the predicate passed
+    pub passed: bool,
+    /// Human-readable explanation
+    pub reason: String,
+}
+
+impl PredicateResult {
+    pub fn pass(reason: impl Into<String>) -> Self {
+        Self {
+            passed: true,
+            reason: reason.into(),
+        }
+    }
+
+    pub fn fail(reason: impl Into<String>) -> Self {
+        Self {
+            passed: false,
+            reason: reason.into(),
+        }
+    }
+}
+
+/// Evaluate a predicate against a claim's selected value.
+pub fn evaluate_predicate(
+    predicate: &Predicate,
+    selected_values: &[YamlValue],
+) -> PredicateResult {
+    match predicate.rule {
+        PredicateRule::Exists => {
+            if selected_values.is_empty() {
+                PredicateResult::fail("Value does not exist")
+            } else {
+                PredicateResult::pass("Value exists")
+            }
+        }
+        PredicateRule::NotExists => {
+            if selected_values.is_empty() {
+                PredicateResult::pass("Value does not exist as expected")
+            } else {
+                PredicateResult::fail("Value exists but should not")
+            }
+        }
+        PredicateRule::Contains => {
+            let target = match &predicate.value {
+                Some(v) => v,
+                None => return PredicateResult::fail("No value specified for contains"),
+            };
+            
+            for value in selected_values {
+                if value_contains(value, target) {
+                    return PredicateResult::pass(format!(
+                        "Value contains {:?}",
+                        yaml_to_display(target)
+                    ));
+                }
+            }
+            PredicateResult::fail(format!(
+                "Value does not contain {:?}",
+                yaml_to_display(target)
+            ))
+        }
+        PredicateRule::Equals => {
+            let target = match &predicate.value {
+                Some(v) => v,
+                None => return PredicateResult::fail("No value specified for equals"),
+            };
+            
+            if selected_values.len() != 1 {
+                return PredicateResult::fail(format!(
+                    "Expected single value for equals, got {}",
+                    selected_values.len()
+                ));
+            }
+            
+            if &selected_values[0] == target {
+                PredicateResult::pass("Values are equal")
+            } else {
+                PredicateResult::fail(format!(
+                    "Values not equal: {:?} != {:?}",
+                    yaml_to_display(&selected_values[0]),
+                    yaml_to_display(target)
+                ))
+            }
+        }
+        PredicateRule::MinLength => {
+            let min = match &predicate.value {
+                Some(YamlValue::Number(n)) => n.as_u64().unwrap_or(0) as usize,
+                _ => return PredicateResult::fail("min_length requires a numeric value"),
+            };
+            
+            for value in selected_values {
+                if let YamlValue::Sequence(seq) = value {
+                    if seq.len() >= min {
+                        return PredicateResult::pass(format!(
+                            "Array has {} elements (min: {})",
+                            seq.len(),
+                            min
+                        ));
+                    } else {
+                        return PredicateResult::fail(format!(
+                            "Array has {} elements (min: {})",
+                            seq.len(),
+                            min
+                        ));
+                    }
+                }
+            }
+            PredicateResult::fail("Value is not an array")
+        }
+        PredicateRule::MaxLength => {
+            let max = match &predicate.value {
+                Some(YamlValue::Number(n)) => n.as_u64().unwrap_or(0) as usize,
+                _ => return PredicateResult::fail("max_length requires a numeric value"),
+            };
+            
+            for value in selected_values {
+                if let YamlValue::Sequence(seq) = value {
+                    if seq.len() <= max {
+                        return PredicateResult::pass(format!(
+                            "Array has {} elements (max: {})",
+                            seq.len(),
+                            max
+                        ));
+                    } else {
+                        return PredicateResult::fail(format!(
+                            "Array has {} elements (max: {})",
+                            seq.len(),
+                            max
+                        ));
+                    }
+                }
+            }
+            PredicateResult::fail("Value is not an array")
+        }
+        PredicateRule::GreaterThan => {
+            let target = match &predicate.value {
+                Some(YamlValue::Number(n)) => n.as_f64().unwrap_or(0.0),
+                _ => return PredicateResult::fail("greater_than requires a numeric value"),
+            };
+            
+            for value in selected_values {
+                if let YamlValue::Number(n) = value {
+                    let v = n.as_f64().unwrap_or(0.0);
+                    if v > target {
+                        return PredicateResult::pass(format!("{} > {}", v, target));
+                    } else {
+                        return PredicateResult::fail(format!("{} is not > {}", v, target));
+                    }
+                }
+            }
+            PredicateResult::fail("Value is not a number")
+        }
+        PredicateRule::LessThan => {
+            let target = match &predicate.value {
+                Some(YamlValue::Number(n)) => n.as_f64().unwrap_or(0.0),
+                _ => return PredicateResult::fail("less_than requires a numeric value"),
+            };
+            
+            for value in selected_values {
+                if let YamlValue::Number(n) = value {
+                    let v = n.as_f64().unwrap_or(0.0);
+                    if v < target {
+                        return PredicateResult::pass(format!("{} < {}", v, target));
+                    } else {
+                        return PredicateResult::fail(format!("{} is not < {}", v, target));
+                    }
+                }
+            }
+            PredicateResult::fail("Value is not a number")
+        }
+        PredicateRule::Matches => {
+            let pattern = match &predicate.value {
+                Some(YamlValue::String(s)) => s,
+                _ => return PredicateResult::fail("matches requires a string pattern"),
+            };
+            
+            let regex = match regex::Regex::new(pattern) {
+                Ok(r) => r,
+                Err(e) => return PredicateResult::fail(format!("Invalid regex: {}", e)),
+            };
+            
+            for value in selected_values {
+                if let YamlValue::String(s) = value {
+                    if regex.is_match(s) {
+                        return PredicateResult::pass(format!("'{}' matches pattern", s));
+                    }
+                }
+            }
+            PredicateResult::fail(format!("No value matches pattern '{}'", pattern))
+        }
+    }
+}
+
+/// Check if a YAML value contains another value.
+fn value_contains(haystack: &YamlValue, needle: &YamlValue) -> bool {
+    match haystack {
+        YamlValue::Sequence(seq) => {
+            // Check if array contains the needle
+            seq.iter().any(|item| item == needle)
+        }
+        YamlValue::String(s) => {
+            // Check if string contains the needle (if needle is also a string)
+            if let YamlValue::String(needle_str) = needle {
+                s.contains(needle_str.as_str())
+            } else {
+                false
+            }
+        }
+        YamlValue::Mapping(map) => {
+            // Check if map contains the needle as a value
+            map.values().any(|v| v == needle)
+        }
+        _ => haystack == needle,
+    }
+}
+
+/// Convert a YAML value to a display string.
+fn yaml_to_display(value: &YamlValue) -> String {
+    match value {
+        YamlValue::Null => "null".to_string(),
+        YamlValue::Bool(b) => b.to_string(),
+        YamlValue::Number(n) => n.to_string(),
+        YamlValue::String(s) => s.clone(),
+        YamlValue::Sequence(_) => "[array]".to_string(),
+        YamlValue::Mapping(_) => "{object}".to_string(),
+        YamlValue::Tagged(t) => format!("!{} ...", t.tag),
+    }
+}
+
+// ============================================================================
+// File Storage
+// ============================================================================
+
+/// Get the path to the rulespec.yaml file for a session.
+pub fn get_rulespec_path(session_id: &str) -> PathBuf {
+    get_session_logs_dir(session_id).join("rulespec.yaml")
+}
+
+/// Get the path to the envelope.yaml file for a session.
+pub fn get_envelope_path(session_id: &str) -> PathBuf {
+    get_session_logs_dir(session_id).join("envelope.yaml")
+}
+
+/// Read a rulespec from the session's rulespec.yaml file.
+pub fn read_rulespec(session_id: &str) -> Result<Option<Rulespec>> {
+    let path = get_rulespec_path(session_id);
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let content = std::fs::read_to_string(&path)?;
+    let rulespec: Rulespec = serde_yaml::from_str(&content)?;
+    Ok(Some(rulespec))
+}
+
+/// Write a rulespec to the session's rulespec.yaml file.
+pub fn write_rulespec(session_id: &str, rulespec: &Rulespec) -> Result<()> {
+    rulespec.validate()?;
+    
+    let path = get_rulespec_path(session_id);
+    let content = format_rulespec_yaml(rulespec);
+    std::fs::write(&path, content)?;
+    Ok(())
+}
+
+/// Read an action envelope from the session's envelope.yaml file.
+pub fn read_envelope(session_id: &str) -> Result<Option<ActionEnvelope>> {
+    let path = get_envelope_path(session_id);
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let content = std::fs::read_to_string(&path)?;
+    let envelope: ActionEnvelope = serde_yaml::from_str(&content)?;
+    Ok(Some(envelope))
+}
+
+/// Write an action envelope to the session's envelope.yaml file.
+pub fn write_envelope(session_id: &str, envelope: &ActionEnvelope) -> Result<()> {
+    let path = get_envelope_path(session_id);
+    let content = format_envelope_yaml(envelope);
+    std::fs::write(&path, content)?;
+    Ok(())
+}
+
+/// Format a rulespec as pretty YAML with comments.
+fn format_rulespec_yaml(rulespec: &Rulespec) -> String {
+    let mut output = String::new();
+    output.push_str("# Rulespec - Machine-readable invariants\n");
+    output.push_str("# Generated by g3 Plan Mode\n\n");
+    
+    let yaml = serde_yaml::to_string(rulespec)
+        .unwrap_or_else(|_| "# Error serializing rulespec".to_string());
+    output.push_str(&yaml);
+    
+    output
+}
+
+/// Format an action envelope as pretty YAML with comments.
+fn format_envelope_yaml(envelope: &ActionEnvelope) -> String {
+    let mut output = String::new();
+    output.push_str("# Action Envelope - Evidence of work done\n");
+    output.push_str("# Generated by g3 Plan Mode\n\n");
+    
+    let yaml = serde_yaml::to_string(envelope)
+        .unwrap_or_else(|_| "# Error serializing envelope".to_string());
+    output.push_str(&yaml);
+    
+    output
+}
+
+// ============================================================================
+// Rulespec Evaluation
+// ============================================================================
+
+/// Result of evaluating a single predicate in context.
+#[derive(Debug, Clone)]
+pub struct PredicateEvaluation {
+    /// The predicate that was evaluated
+    pub predicate: Predicate,
+    /// The claim name
+    pub claim_name: String,
+    /// Values selected by the claim
+    pub selected_values: Vec<YamlValue>,
+    /// Result of evaluation
+    pub result: PredicateResult,
+}
+
+/// Result of evaluating an entire rulespec against an envelope.
+#[derive(Debug, Clone)]
+pub struct RulespecEvaluation {
+    /// Results for each predicate
+    pub predicate_results: Vec<PredicateEvaluation>,
+    /// Number of predicates that passed
+    pub passed_count: usize,
+    /// Number of predicates that failed
+    pub failed_count: usize,
+}
+
+impl RulespecEvaluation {
+    /// Check if all predicates passed.
+    pub fn all_passed(&self) -> bool {
+        self.failed_count == 0
+    }
+}
+
+/// Evaluate a rulespec against an action envelope.
+pub fn evaluate_rulespec(rulespec: &Rulespec, envelope: &ActionEnvelope) -> RulespecEvaluation {
+    let envelope_value = envelope.to_yaml_value();
+    let mut predicate_results = Vec::new();
+    let mut passed_count = 0;
+    let mut failed_count = 0;
+
+    // Build claim lookup
+    let claims: HashMap<&str, &Claim> = rulespec
+        .claims
+        .iter()
+        .map(|c| (c.name.as_str(), c))
+        .collect();
+
+    for predicate in &rulespec.predicates {
+        let claim = claims.get(predicate.claim.as_str());
+        
+        let (selected_values, result) = match claim {
+            Some(claim) => {
+                match Selector::parse(&claim.selector) {
+                    Ok(selector) => {
+                        let values = selector.select(&envelope_value);
+                        let result = evaluate_predicate(predicate, &values);
+                        (values, result)
+                    }
+                    Err(e) => {
+                        (vec![], PredicateResult::fail(format!("Invalid selector: {}", e)))
+                    }
+                }
+            }
+            None => (vec![], PredicateResult::fail(format!(
+                "Unknown claim: {}",
+                predicate.claim
+            ))),
+        };
+
+        if result.passed {
+            passed_count += 1;
+        } else {
+            failed_count += 1;
+        }
+
+        predicate_results.push(PredicateEvaluation {
+            predicate: predicate.clone(),
+            claim_name: predicate.claim.clone(),
+            selected_values,
+            result,
+        });
+    }
+
+    RulespecEvaluation {
+        predicate_results,
+        passed_count,
+        failed_count,
+    }
+}
+
+/// Format rulespec evaluation results for display.
+pub fn format_evaluation_results(eval: &RulespecEvaluation) -> String {
+    let mut output = String::new();
+    
+    output.push_str("\n");
+    output.push_str(&"─".repeat(60));
+    output.push_str("\n");
+    output.push_str("📜 INVARIANT VERIFICATION\n");
+    output.push_str(&"─".repeat(60));
+    output.push_str("\n\n");
+
+    for pe in &eval.predicate_results {
+        let status = if pe.result.passed { "✅" } else { "❌" };
+        output.push_str(&format!(
+            "{} [{}] {} {:?}\n",
+            status,
+            pe.predicate.source,
+            pe.predicate.rule,
+            pe.claim_name
+        ));
+        output.push_str(&format!("   {}\n", pe.result.reason));
+        if let Some(notes) = &pe.predicate.notes {
+            output.push_str(&format!("   📝 {}\n", notes));
+        }
+        output.push('\n');
+    }
+
+    output.push_str(&"─".repeat(60));
+    output.push_str("\n");
+    if eval.all_passed() {
+        output.push_str(&format!(
+            "✅ All {} invariant(s) satisfied\n",
+            eval.passed_count
+        ));
+    } else {
+        output.push_str(&format!(
+            "⚠️  {}/{} invariant(s) satisfied, {} failed\n",
+            eval.passed_count,
+            eval.passed_count + eval.failed_count,
+            eval.failed_count
+        ));
+    }
+    output.push_str(&"─".repeat(60));
+    output.push_str("\n");
+
+    output
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ========================================================================
+    // Selector Tests
+    // ========================================================================
+
+    #[test]
+    fn test_selector_parse_simple_field() {
+        let selector = Selector::parse("foo").unwrap();
+        assert_eq!(selector.segments.len(), 1);
+    }
+
+    #[test]
+    fn test_selector_parse_nested_fields() {
+        let selector = Selector::parse("foo.bar.baz").unwrap();
+        assert_eq!(selector.segments.len(), 3);
+    }
+
+    #[test]
+    fn test_selector_parse_array_index() {
+        let selector = Selector::parse("foo[0]").unwrap();
+        assert_eq!(selector.segments.len(), 2);
+    }
+
+    #[test]
+    fn test_selector_parse_wildcard() {
+        let selector = Selector::parse("items[*].id").unwrap();
+        assert_eq!(selector.segments.len(), 3);
+    }
+
+    #[test]
+    fn test_selector_parse_empty_fails() {
+        assert!(Selector::parse("").is_err());
+        assert!(Selector::parse("   ").is_err());
+    }
+
+    #[test]
+    fn test_selector_select_simple() {
+        let yaml: YamlValue = serde_yaml::from_str(r#"
+            foo: bar
+        "#).unwrap();
+        
+        let selector = Selector::parse("foo").unwrap();
+        let results = selector.select(&yaml);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], YamlValue::String("bar".to_string()));
+    }
+
+    #[test]
+    fn test_selector_select_nested() {
+        let yaml: YamlValue = serde_yaml::from_str(r#"
+            csv_importer:
+              capabilities:
+                - handle_headers
+                - handle_tsv
+        "#).unwrap();
+        
+        let selector = Selector::parse("csv_importer.capabilities").unwrap();
+        let results = selector.select(&yaml);
+        assert_eq!(results.len(), 1);
+        if let YamlValue::Sequence(seq) = &results[0] {
+            assert_eq!(seq.len(), 2);
+        } else {
+            panic!("Expected sequence");
+        }
+    }
+
+    #[test]
+    fn test_selector_select_array_index() {
+        let yaml: YamlValue = serde_yaml::from_str(r#"
+            items:
+              - name: first
+              - name: second
+        "#).unwrap();
+        
+        let selector = Selector::parse("items[1].name").unwrap();
+        let results = selector.select(&yaml);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], YamlValue::String("second".to_string()));
+    }
+
+    #[test]
+    fn test_selector_select_wildcard() {
+        let yaml: YamlValue = serde_yaml::from_str(r#"
+            items:
+              - id: 1
+              - id: 2
+              - id: 3
+        "#).unwrap();
+        
+        let selector = Selector::parse("items[*].id").unwrap();
+        let results = selector.select(&yaml);
+        assert_eq!(results.len(), 3);
+    }
+
+    #[test]
+    fn test_selector_select_missing_path() {
+        let yaml: YamlValue = serde_yaml::from_str(r#"
+            foo: bar
+        "#).unwrap();
+        
+        let selector = Selector::parse("nonexistent.path").unwrap();
+        let results = selector.select(&yaml);
+        assert!(results.is_empty());
+    }
+
+    // ========================================================================
+    // Predicate Tests
+    // ========================================================================
+
+    #[test]
+    fn test_predicate_exists() {
+        let predicate = Predicate::new("test", PredicateRule::Exists, InvariantSource::TaskPrompt);
+        
+        let result = evaluate_predicate(&predicate, &[YamlValue::String("value".to_string())]);
+        assert!(result.passed);
+        
+        let result = evaluate_predicate(&predicate, &[]);
+        assert!(!result.passed);
+    }
+
+    #[test]
+    fn test_predicate_not_exists() {
+        let predicate = Predicate::new("test", PredicateRule::NotExists, InvariantSource::TaskPrompt);
+        
+        let result = evaluate_predicate(&predicate, &[]);
+        assert!(result.passed);
+        
+        let result = evaluate_predicate(&predicate, &[YamlValue::String("value".to_string())]);
+        assert!(!result.passed);
+    }
+
+    #[test]
+    fn test_predicate_contains_array() {
+        let predicate = Predicate::new("test", PredicateRule::Contains, InvariantSource::TaskPrompt)
+            .with_value(YamlValue::String("handle_tsv".to_string()));
+        
+        let array = YamlValue::Sequence(vec![
+            YamlValue::String("handle_headers".to_string()),
+            YamlValue::String("handle_tsv".to_string()),
+        ]);
+        
+        let result = evaluate_predicate(&predicate, &[array]);
+        assert!(result.passed);
+    }
+
+    #[test]
+    fn test_predicate_contains_string() {
+        let predicate = Predicate::new("test", PredicateRule::Contains, InvariantSource::TaskPrompt)
+            .with_value(YamlValue::String("csv".to_string()));
+        
+        let result = evaluate_predicate(
+            &predicate,
+            &[YamlValue::String("csv_importer".to_string())],
+        );
+        assert!(result.passed);
+    }
+
+    #[test]
+    fn test_predicate_equals() {
+        let predicate = Predicate::new("test", PredicateRule::Equals, InvariantSource::Memory)
+            .with_value(YamlValue::String("expected".to_string()));
+        
+        let result = evaluate_predicate(
+            &predicate,
+            &[YamlValue::String("expected".to_string())],
+        );
+        assert!(result.passed);
+        
+        let result = evaluate_predicate(
+            &predicate,
+            &[YamlValue::String("different".to_string())],
+        );
+        assert!(!result.passed);
+    }
+
+    #[test]
+    fn test_predicate_min_length() {
+        let predicate = Predicate::new("test", PredicateRule::MinLength, InvariantSource::TaskPrompt)
+            .with_value(YamlValue::Number(2.into()));
+        
+        let array = YamlValue::Sequence(vec![
+            YamlValue::String("a".to_string()),
+            YamlValue::String("b".to_string()),
+            YamlValue::String("c".to_string()),
+        ]);
+        
+        let result = evaluate_predicate(&predicate, &[array]);
+        assert!(result.passed);
+    }
+
+    // ========================================================================
+    // Rulespec Tests
+    // ========================================================================
+
+    #[test]
+    fn test_rulespec_validation() {
+        let mut rulespec = Rulespec::new();
+        
+        // Empty rulespec is valid
+        assert!(rulespec.validate().is_ok());
+        
+        // Add a claim
+        rulespec.add_claim(Claim::new("caps", "csv_importer.capabilities"));
+        assert!(rulespec.validate().is_ok());
+        
+        // Add a predicate referencing the claim
+        rulespec.add_predicate(
+            Predicate::new("caps", PredicateRule::Exists, InvariantSource::TaskPrompt)
+        );
+        assert!(rulespec.validate().is_ok());
+        
+        // Add a predicate referencing unknown claim
+        rulespec.add_predicate(
+            Predicate::new("unknown", PredicateRule::Exists, InvariantSource::TaskPrompt)
+        );
+        assert!(rulespec.validate().is_err());
+    }
+
+    #[test]
+    fn test_rulespec_duplicate_claim_names() {
+        let mut rulespec = Rulespec::new();
+        rulespec.add_claim(Claim::new("test", "foo"));
+        rulespec.add_claim(Claim::new("test", "bar")); // Duplicate name
+        
+        assert!(rulespec.validate().is_err());
+    }
+
+    // ========================================================================
+    // ActionEnvelope Tests
+    // ========================================================================
+
+    #[test]
+    fn test_envelope_to_yaml_value() {
+        let mut envelope = ActionEnvelope::new();
+        envelope.add_fact(
+            "csv_importer",
+            serde_yaml::from_str(r#"
+                capabilities:
+                  - handle_headers
+                  - handle_tsv
+                file: src/import/csv.rs
+            "#).unwrap(),
+        );
+        
+        let yaml = envelope.to_yaml_value();
+        let selector = Selector::parse("csv_importer.capabilities").unwrap();
+        let results = selector.select(&yaml);
+        
+        assert_eq!(results.len(), 1);
+        if let YamlValue::Sequence(seq) = &results[0] {
+            assert_eq!(seq.len(), 2);
+        } else {
+            panic!("Expected sequence");
+        }
+    }
+
+    // ========================================================================
+    // Full Evaluation Tests
+    // ========================================================================
+
+    #[test]
+    fn test_evaluate_rulespec() {
+        let mut rulespec = Rulespec::new();
+        rulespec.add_claim(Claim::new("caps", "csv_importer.capabilities"));
+        rulespec.add_predicate(
+            Predicate::new("caps", PredicateRule::Contains, InvariantSource::TaskPrompt)
+                .with_value(YamlValue::String("handle_tsv".to_string()))
+                .with_notes("User requested TSV support")
+        );
+        
+        let mut envelope = ActionEnvelope::new();
+        envelope.add_fact(
+            "csv_importer",
+            serde_yaml::from_str(r#"
+                capabilities:
+                  - handle_headers
+                  - handle_tsv
+            "#).unwrap(),
+        );
+        
+        let eval = evaluate_rulespec(&rulespec, &envelope);
+        assert!(eval.all_passed());
+        assert_eq!(eval.passed_count, 1);
+        assert_eq!(eval.failed_count, 0);
+    }
+
+    #[test]
+    fn test_evaluate_rulespec_failure() {
+        let mut rulespec = Rulespec::new();
+        rulespec.add_claim(Claim::new("caps", "csv_importer.capabilities"));
+        rulespec.add_predicate(
+            Predicate::new("caps", PredicateRule::Contains, InvariantSource::TaskPrompt)
+                .with_value(YamlValue::String("handle_xlsx".to_string()))
+        );
+        
+        let mut envelope = ActionEnvelope::new();
+        envelope.add_fact(
+            "csv_importer",
+            serde_yaml::from_str(r#"
+                capabilities:
+                  - handle_headers
+                  - handle_tsv
+            "#).unwrap(),
+        );
+        
+        let eval = evaluate_rulespec(&rulespec, &envelope);
+        assert!(!eval.all_passed());
+        assert_eq!(eval.passed_count, 0);
+        assert_eq!(eval.failed_count, 1);
+    }
+
+    // ========================================================================
+    // Serialization Tests
+    // ========================================================================
+
+    #[test]
+    fn test_rulespec_yaml_roundtrip() {
+        let mut rulespec = Rulespec::new();
+        rulespec.add_claim(Claim::new("caps", "csv_importer.capabilities"));
+        rulespec.add_predicate(
+            Predicate::new("caps", PredicateRule::Contains, InvariantSource::TaskPrompt)
+                .with_value(YamlValue::String("handle_tsv".to_string()))
+                .with_notes("User requested TSV support")
+        );
+        
+        let yaml = serde_yaml::to_string(&rulespec).unwrap();
+        let parsed: Rulespec = serde_yaml::from_str(&yaml).unwrap();
+        
+        assert_eq!(parsed.claims.len(), 1);
+        assert_eq!(parsed.predicates.len(), 1);
+        assert_eq!(parsed.predicates[0].source, InvariantSource::TaskPrompt);
+        assert_eq!(parsed.predicates[0].notes, Some("User requested TSV support".to_string()));
+    }
+
+    #[test]
+    fn test_envelope_yaml_roundtrip() {
+        let mut envelope = ActionEnvelope::new();
+        envelope.add_fact("test_key", YamlValue::String("test_value".to_string()));
+        
+        let yaml = serde_yaml::to_string(&envelope).unwrap();
+        let parsed: ActionEnvelope = serde_yaml::from_str(&yaml).unwrap();
+        
+        assert_eq!(parsed.facts.len(), 1);
+        assert!(parsed.facts.contains_key("test_key"));
+    }
+
+    #[test]
+    fn test_empty_rulespec_serializes() {
+        let rulespec = Rulespec::new();
+        let yaml = serde_yaml::to_string(&rulespec).unwrap();
+        // Empty rulespec should serialize (may be {} or empty fields)
+        
+        // Should deserialize back
+        let _: Rulespec = serde_yaml::from_str(&yaml).unwrap();
+    }
+
+    #[test]
+    fn test_empty_envelope_serializes() {
+        let envelope = ActionEnvelope::new();
+        let yaml = serde_yaml::to_string(&envelope).unwrap();
+        
+        // Should deserialize back
+        let _: ActionEnvelope = serde_yaml::from_str(&yaml).unwrap();
+    }
+}

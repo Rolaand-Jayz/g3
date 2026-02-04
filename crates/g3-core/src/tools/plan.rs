@@ -20,6 +20,8 @@ use crate::ToolCall;
 
 use super::executor::ToolContext;
 
+use super::invariants::{get_envelope_path, get_rulespec_path};
+
 // ============================================================================
 // Plan Schema
 // ============================================================================
@@ -696,7 +698,8 @@ pub fn plan_verify(plan: &Plan, working_dir: Option<&str>) -> PlanVerification {
 
 /// Format verification results as a string for display.
 /// Uses loud formatting for warnings and errors.
-pub fn format_verification_results(verification: &PlanVerification) -> String {
+/// If session_id is provided, also prints rulespec and envelope file locations.
+pub fn format_verification_results(verification: &PlanVerification, session_id: Option<&str>) -> String {
     let mut output = String::new();
     let (warnings, errors) = verification.count_issues();
     
@@ -736,6 +739,24 @@ pub fn format_verification_results(verification: &PlanVerification) -> String {
     } else {
         output.push_str("✅ VERIFICATION COMPLETE: All evidence validated\n");
     }
+    
+    // Print rulespec and envelope locations if session_id provided
+    if let Some(sid) = session_id {
+        output.push_str("\n");
+        output.push_str("📜 INVARIANTS\n");
+        
+        let rulespec_path = get_rulespec_path(sid);
+        let envelope_path = get_envelope_path(sid);
+        
+        let rulespec_status = if rulespec_path.exists() { "✅" } else { "⚠️  (not found)" };
+        let envelope_status = if envelope_path.exists() { "✅" } else { "⚠️  (not found)" };
+        
+        output.push_str(&format!("  {} Rulespec: {}\n", rulespec_status, rulespec_path.display()));
+        output.push_str(&format!("  {} Envelope: {}\n", envelope_status, envelope_path.display()));
+        
+        output.push_str("\n");
+    }
+    
     output.push_str(&"═".repeat(60));
     output.push_str("\n");
     
@@ -848,7 +869,7 @@ pub async fn execute_plan_write<W: UiWriter>(
     // Check if plan is now complete and trigger verification
     if plan.is_complete() && plan.is_approved() {
         let verification = plan_verify(&plan, ctx.working_dir);
-        let verification_output = format_verification_results(&verification);
+        let verification_output = format_verification_results(&verification, ctx.session_id);
         return Ok(format!("✅ Plan updated: {}\n{}", plan.status_summary(), verification_output));
     }
 

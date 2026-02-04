@@ -1,5 +1,5 @@
 # Workspace Memory
-> Updated: 2026-02-02T03:53:06Z | Size: 16.9k chars
+> Updated: 2026-02-04T03:13:35Z | Size: 18.4k chars
 
 ### Remember Tool Wiring
 - `crates/g3-core/src/tools/memory.rs` [0..5000] - `execute_remember()`, `get_memory_path()`, `merge_memory()`
@@ -315,3 +315,30 @@ Verifies evidence in completed plan items deterministically.
 - Test reference: `tests/foo.rs::test_bar`
 
 **Integration:** Called from `execute_plan_write()` when plan is complete and approved (line 828-833)
+
+### Invariants System (Rulespec & Action Envelope)
+Machine-readable invariants for Plan Mode verification.
+
+- `crates/g3-core/src/tools/invariants.rs`
+  - `InvariantSource` [25..40] - enum: TaskPrompt, Memory
+  - `Claim` [50..75] - name + selector for envelope paths
+  - `PredicateRule` [80..120] - enum: Contains, Equals, Exists, NotExists, GreaterThan, LessThan, MinLength, MaxLength, Matches
+  - `Predicate` [125..180] - claim ref, rule, value, source, notes
+  - `Rulespec` [185..240] - claims[] + predicates[]
+  - `ActionEnvelope` [245..290] - facts HashMap<String, YamlValue>
+  - `Selector` [295..410] - parse(), select() for XPath-like paths (foo.bar, foo[0], foo[*])
+  - `evaluate_predicate()` [415..630] - evaluates predicate against selected values
+  - `get_rulespec_path()` [635..640] - `.g3/sessions/<id>/rulespec.yaml`
+  - `get_envelope_path()` [642..647] - `.g3/sessions/<id>/envelope.yaml`
+  - `read_rulespec()`, `write_rulespec()` [650..680]
+  - `read_envelope()`, `write_envelope()` [682..710]
+  - `evaluate_rulespec()` [780..850] - full rulespec evaluation against envelope
+  - `format_evaluation_results()` [855..900] - pretty-print evaluation
+
+- `crates/g3-core/src/tools/plan.rs`
+  - `format_verification_results()` [702..762] - now prints rulespec/envelope paths
+
+- `crates/g3-core/src/prompts.rs` [92..156] - Invariants section in SHARED_PLAN_SECTION
+
+**Selector syntax**: `foo.bar` (nested), `foo[0]` (index), `foo[*]` (wildcard)
+**Predicate rules**: contains, equals, exists, not_exists, min_length, max_length, greater_than, less_than, matches

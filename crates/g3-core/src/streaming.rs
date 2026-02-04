@@ -63,7 +63,7 @@ pub fn format_tool_result_summary(
     tool_result: &str,
     tool_success: bool,
 ) -> ToolOutputFormat {
-    let is_todo_tool = tool_name == "todo_read" || tool_name == "todo_write";
+    let is_self_handled = is_self_handled_tool(tool_name);
     let is_compact_tool = matches!(
         tool_name,
         "read_file"
@@ -77,7 +77,7 @@ pub fn format_tool_result_summary(
             | "plan_approve"
     );
 
-    if is_todo_tool {
+    if is_self_handled {
         ToolOutputFormat::SelfHandled
     } else if is_compact_tool {
         if !tool_success {

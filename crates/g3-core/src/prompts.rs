@@ -95,6 +95,71 @@ When done, add evidence and notes:
   notes: \"Extended existing parser instead of creating duplicate\"
 ```
 
+## Invariants
+
+For plans with 3+ items, you MUST extract invariants from the task and write them as a **rulespec**.
+
+### What are Invariants?
+
+Invariants are constraints that MUST or MUST NOT hold. Extract them from:
+- **task_prompt**: What the user explicitly requires (\"must support TSV\", \"must not break existing API\")
+- **memory**: Persistent rules from AGENTS.md or workspace memory (\"must be Send + Sync\", \"must not block async runtime\")
+
+### Rulespec Structure
+
+Write invariants as a `rulespec.yaml` file with claims and predicates:
+
+```yaml
+claims:
+  - name: csv_capabilities
+    selector: \"csv_importer.capabilities\"
+  - name: api_changes
+    selector: \"breaking_changes\"
+
+predicates:
+  - claim: csv_capabilities
+    rule: contains
+    value: \"handle_tsv\"
+    source: task_prompt
+    notes: \"User explicitly requested TSV support in addition to CSV\"
+  - claim: api_changes
+    rule: not_exists
+    source: memory
+    notes: \"AGENTS.md requires backward compatibility\"
+```
+
+### Predicate Rules
+
+- `contains`: Array contains value, or string contains substring
+- `equals`: Exact match
+- `exists`: Value is present
+- `not_exists`: Value is absent
+- `min_length` / `max_length`: Array size constraints
+- `greater_than` / `less_than`: Numeric comparisons
+- `matches`: Regex pattern match
+
+### Action Envelope
+
+As the FINAL step, write an `envelope.yaml` with facts about completed work:
+
+```yaml
+facts:
+  csv_importer:
+    capabilities: [handle_headers, handle_tsv, handle_quoted]
+    file: \"src/import/csv.rs\"
+    tests: [\"test_tsv_import\", \"test_header_detection\"]
+  breaking_changes: null  # Explicitly absent
+```
+
+### Workflow
+
+1. While drafting the plan, write `rulespec.yaml` with claims and predicates extracted from the task
+2. Implement all plan items
+3. After all work is complete, write `envelope.yaml` with facts about the completed work
+4. **THEN** call `plan_write` to mark the final item done - verification will check that both files exist
+
+**IMPORTANT**: Write envelope.yaml AFTER completing all implementation work, but BEFORE the final `plan_write` call. The verification step checks for these files when the plan completes.
+
 ## Benefits
 
 ✓ Prevents missed steps
