@@ -40,7 +40,7 @@ use accumulative::run_accumulative_mode;
 use agent_mode::run_agent_mode;
 use autonomous::run_autonomous;
 use interactive::run_interactive;
-use project_files::{combine_project_content, read_agents_config, read_include_prompt, read_workspace_memory};
+use project_files::{combine_project_content, discover_and_format_skills, read_agents_config, read_include_prompt, read_workspace_memory};
 use simple_output::SimpleOutput;
 use ui_writer_impl::ConsoleUiWriter;
 use g3_core::ui_writer::UiWriter;
@@ -117,8 +117,13 @@ pub async fn run() -> Result<()> {
     // Load configuration with CLI overrides
     let config = load_config_with_cli_overrides(&cli)?;
 
+    // Discover skills from configured paths
+    let (_skills, skills_content) = discover_and_format_skills(&workspace_dir, &config.skills);
+
     // Combine AGENTS.md and memory content
-    let combined_content = combine_project_content(agents_content, memory_content, language_content, include_prompt, &workspace_dir);
+    let combined_content = combine_project_content(
+        agents_content, memory_content, language_content, include_prompt, skills_content, &workspace_dir
+    );
 
     run_console_mode(cli, config, project, combined_content, workspace_dir).await
 }

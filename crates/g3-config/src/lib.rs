@@ -13,6 +13,8 @@ pub struct Config {
     pub computer_control: ComputerControlConfig,
     #[serde(default)]
     pub webdriver: WebDriverConfig,
+    #[serde(default)]
+    pub skills: SkillsConfig,
 }
 
 /// Provider configuration with named configs per provider type
@@ -193,6 +195,26 @@ pub struct WebDriverConfig {
     pub browser: WebDriverBrowser,
 }
 
+/// Skills configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillsConfig {
+    /// Whether skills are enabled (default: true)
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Additional paths to search for skills (beyond ~/.g3/skills and .g3/skills)
+    #[serde(default)]
+    pub extra_paths: Vec<String>,
+}
+
+impl Default for SkillsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            extra_paths: Vec::new(),
+        }
+    }
+}
+
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
@@ -257,6 +279,7 @@ impl Default for Config {
             },
             computer_control: ComputerControlConfig::default(),
             webdriver: WebDriverConfig::default(),
+            skills: SkillsConfig::default(),
         }
     }
 }

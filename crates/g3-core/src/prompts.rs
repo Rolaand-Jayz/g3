@@ -300,30 +300,58 @@ write_file(\"helper.rs\", \"...\")
 // COMPOSED PROMPTS
 // ============================================================================
 
+use crate::skills::{Skill, generate_skills_prompt};
+
 /// System prompt for providers with native tool calling (Anthropic, OpenAI, etc.)
 pub fn get_system_prompt_for_native() -> String {
+    get_system_prompt_for_native_with_skills(&[])
+}
+
+/// System prompt for providers with native tool calling, with skills support.
+pub fn get_system_prompt_for_native_with_skills(skills: &[Skill]) -> String {
+    let skills_section = generate_skills_prompt(skills);
+    let skills_part = if skills_section.is_empty() {
+        String::new()
+    } else {
+        format!("\n\n{}", skills_section)
+    };
+    
     format!(
-        "{}\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}",
+        "{}\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}{}",
         SHARED_INTRO,
         SHARED_PLAN_SECTION,
         SHARED_TEMPORARY_FILES,
         SHARED_WEB_RESEARCH,
         SHARED_WORKSPACE_MEMORY,
-        SHARED_RESPONSE_GUIDELINES
+        SHARED_RESPONSE_GUIDELINES,
+        skills_part
     )
 }
 
 /// System prompt for providers without native tool calling (embedded models)
 pub fn get_system_prompt_for_non_native() -> String {
+    get_system_prompt_for_non_native_with_skills(&[])
+}
+
+/// System prompt for providers without native tool calling, with skills support.
+pub fn get_system_prompt_for_non_native_with_skills(skills: &[Skill]) -> String {
+    let skills_section = generate_skills_prompt(skills);
+    let skills_part = if skills_section.is_empty() {
+        String::new()
+    } else {
+        format!("\n\n{}", skills_section)
+    };
+    
     format!(
-        "{}\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}",
+        "{}\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}{}",
         SHARED_INTRO,
         NON_NATIVE_TOOL_FORMAT,
         NON_NATIVE_INSTRUCTIONS,
         SHARED_PLAN_SECTION,
         SHARED_WEB_RESEARCH,
         SHARED_WORKSPACE_MEMORY,
-        SHARED_RESPONSE_GUIDELINES
+        SHARED_RESPONSE_GUIDELINES,
+        skills_part
     )
 }
 
@@ -336,9 +364,17 @@ const G3_IDENTITY_LINE: &str = "You are G3, an AI programming agent of the same 
 /// The agent_prompt replaces only the G3 identity line at the start of the prompt.
 /// Everything else (tool instructions, coding guidelines, etc.) is preserved.
 pub fn get_agent_system_prompt(agent_prompt: &str, allow_multiple_tool_calls: bool) -> String {
+    get_agent_system_prompt_with_skills(agent_prompt, allow_multiple_tool_calls, &[])
+}
+
+/// Generate a system prompt for agent mode with skills support.
+///
+/// The agent_prompt replaces only the G3 identity line at the start of the prompt.
+/// Everything else (tool instructions, coding guidelines, skills, etc.) is preserved.
+pub fn get_agent_system_prompt_with_skills(agent_prompt: &str, allow_multiple_tool_calls: bool, skills: &[Skill]) -> String {
     // Get the full system prompt (always allows multiple tool calls now)
     let _ = allow_multiple_tool_calls; // Parameter kept for API compatibility but ignored
-    let full_prompt = get_system_prompt_for_native();
+    let full_prompt = get_system_prompt_for_native_with_skills(skills);
 
     // Replace only the G3 identity line with the custom agent prompt
     full_prompt.replace(G3_IDENTITY_LINE, agent_prompt.trim())
@@ -418,5 +454,51 @@ mod tests {
         
         assert!(native.contains("# Web Research"));
         assert!(non_native.contains("# Web Research"));
+    }
+
+    #[test]
+    fn test_native_prompt_without_skills() {
+        let prompt = get_system_prompt_for_native_with_skills(&[]);
+        assert!(!prompt.contains("<available_skills>"));
+        assert!(!prompt.contains("# Available Skills"));
+    }
+
+    #[test]
+    fn test_native_prompt_with_skills() {
+        let skills = vec![Skill {
+            name: "test-skill".to_string(),
+            description: "A test skill for unit testing".to_string(),
+            license: None,
+            compatibility: None,
+            metadata: None,
+            allowed_tools: None,
+            body: String::new(),
+            path: "/path/to/test-skill/SKILL.md".to_string(),
+        }];
+        
+        let prompt = get_system_prompt_for_native_with_skills(&skills);
+        assert!(prompt.contains("# Available Skills"));
+        assert!(prompt.contains("<available_skills>"));
+        assert!(prompt.contains("<name>test-skill</name>"));
+        assert!(prompt.contains("<description>A test skill for unit testing</description>"));
+        assert!(prompt.contains("<location>/path/to/test-skill/SKILL.md</location>"));
+    }
+
+    #[test]
+    fn test_agent_prompt_with_skills() {
+        let skills = vec![Skill {
+            name: "agent-skill".to_string(),
+            description: "Skill for agent mode".to_string(),
+            license: None,
+            compatibility: None,
+            metadata: None,
+            allowed_tools: None,
+            body: String::new(),
+            path: "/path/to/SKILL.md".to_string(),
+        }];
+        
+        let prompt = get_agent_system_prompt_with_skills("Custom agent", true, &skills);
+        assert!(prompt.contains("Custom agent"));
+        assert!(prompt.contains("<name>agent-skill</name>"));
     }
 }

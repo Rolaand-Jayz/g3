@@ -3,9 +3,12 @@
 //! Reads AGENTS.md and workspace memory files from the workspace.
 
 use std::path::Path;
+use std::path::PathBuf;
 use tracing::error;
 
 use crate::template::process_template;
+use g3_core::{discover_skills, generate_skills_prompt, Skill};
+use g3_config::SkillsConfig;
 
 /// Read AGENTS.md configuration from the workspace directory.
 /// Returns formatted content with emoji prefix, or None if not found.
@@ -86,15 +89,16 @@ pub fn combine_project_content(
     memory_content: Option<String>,
     language_content: Option<String>,
     include_prompt: Option<String>,
+    skills_content: Option<String>,
     workspace_dir: &Path,
 ) -> Option<String> {
     // Always include working directory to prevent LLM from hallucinating paths
     let cwd_info = format!("📂 Working Directory: {}", workspace_dir.display());
     
-    // Order: cwd → agents → language → include_prompt → memory
+    // Order: cwd → agents → language → include_prompt → skills → memory
     // Include prompt comes BEFORE memory so memory is always last (most recent context)
     let parts: Vec<String> = [
-        Some(cwd_info), agents_content, language_content, include_prompt, memory_content
+        Some(cwd_info), agents_content, language_content, include_prompt, skills_content, memory_content
     ]
         .into_iter()
         .flatten()
@@ -171,6 +175,38 @@ fn truncate_for_display(s: &str, max_len: usize) -> String {
     }
 }
 
+/// Discover skills from configured paths and generate the skills prompt.
+///
+/// Returns the skills prompt section if any skills are found, None otherwise.
+/// Skills are discovered from:
+/// 1. Global: ~/.g3/skills/
+/// 2. Extra paths from config
+/// 3. Workspace: .g3/skills/ (highest priority)
+pub fn discover_and_format_skills(
+    workspace_dir: &Path,
+    skills_config: &SkillsConfig,
+) -> (Vec<Skill>, Option<String>) {
+    if !skills_config.enabled {
+        return (Vec::new(), None);
+    }
+
+    // Convert extra_paths from config to PathBuf
+    let extra_paths: Vec<PathBuf> = skills_config
+        .extra_paths
+        .iter()
+        .map(|p| PathBuf::from(p))
+        .collect();
+
+    let skills = discover_skills(Some(workspace_dir), &extra_paths);
+    
+    if skills.is_empty() {
+        return (Vec::new(), None);
+    }
+
+    let prompt = generate_skills_prompt(&skills);
+    (skills, Some(prompt))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,6 +255,7 @@ mod tests {
             Some("memory".to_string()),
             Some("language".to_string()),
             None, // include_prompt
+            None, // skills_content
             &workspace,
         );
         assert!(result.is_some());
@@ -232,7 +269,7 @@ mod tests {
     #[test]
     fn test_combine_project_content_partial() {
         let workspace = std::path::PathBuf::from("/test/workspace");
-        let result = combine_project_content(None, Some("memory".to_string()), None, None, &workspace);
+        let result = combine_project_content(None, Some("memory".to_string()), None, None, None, &workspace);
         assert!(result.is_some());
         let content = result.unwrap();
         assert!(content.contains("📂 Working Directory: /test/workspace"));
@@ -242,7 +279,7 @@ mod tests {
     #[test]
     fn test_combine_project_content_all_none() {
         let workspace = std::path::PathBuf::from("/test/workspace");
-        let result = combine_project_content(None, None, None, None, &workspace);
+        let result = combine_project_content(None, None, None, None, None, &workspace);
         // Now always returns Some because we always include the working directory
         assert!(result.is_some());
         assert!(result.unwrap().contains("📂 Working Directory: /test/workspace"));
@@ -256,6 +293,7 @@ mod tests {
             Some("memory".to_string()),
             Some("language".to_string()),
             Some("include_prompt".to_string()),
+            None, // skills_content
             &workspace,
         );
         assert!(result.is_some());
@@ -272,6 +310,7 @@ mod tests {
             Some("MEMORY_CONTENT".to_string()),
             Some("LANGUAGE_CONTENT".to_string()),
             Some("INCLUDE_PROMPT_CONTENT".to_string()),
+            None, // skills_content
             &workspace,
         );
         let content = result.unwrap();
@@ -297,6 +336,7 @@ mod tests {
             Some("MEMORY".to_string()),
             Some("LANGUAGE".to_string()),
             None, // no include_prompt
+            None, // skills_content
             &workspace,
         );
         let content = result.unwrap();

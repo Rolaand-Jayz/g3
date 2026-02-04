@@ -109,6 +109,43 @@ These commands give you fine-grained control over context management, allowing y
 - **Code Search**: Embedded tree-sitter for syntax-aware code search (Rust, Python, JavaScript, TypeScript, Go, Java, C, C++) - see [Code Search Guide](docs/CODE_SEARCH.md)
 - **Final Output**: Formatted result presentation
 
+### Agent Skills
+
+g3 supports the [Agent Skills](https://agentskills.io) specification - an open format for portable skill packages that give the agent new capabilities.
+
+**Skill Locations** (in priority order, later overrides earlier):
+1. Global: `~/.g3/skills/`
+2. Extra paths from config
+3. Workspace: `.g3/skills/` (highest priority)
+
+**SKILL.md Format**:
+```yaml
+---
+name: pdf-processing          # Required: 1-64 chars, lowercase + hyphens
+description: Extract text...  # Required: 1-1024 chars, when to use
+license: Apache-2.0           # Optional
+compatibility: Requires git   # Optional: environment requirements
+---
+
+# PDF Processing
+
+Detailed instructions for the agent...
+```
+
+**Configuration** (in `g3.toml`):
+```toml
+[skills]
+enabled = true                    # Default: true
+extra_paths = ["/path/to/skills"] # Additional skill directories
+```
+
+At startup, g3 scans skill directories and injects a summary into the system prompt. When the agent needs a skill, it reads the full `SKILL.md` using the `read_file` tool.
+
+Each skill adds ~50-100 tokens to context (name + description + path). Skills can include:
+- `scripts/` - Executable code (Python, Bash, etc.)
+- `references/` - Additional documentation
+- `assets/` - Templates, data files
+
 ### Provider Flexibility
 - Support for multiple LLM providers through a unified interface
 - Hot-swappable providers without code changes
