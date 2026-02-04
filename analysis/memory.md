@@ -1,5 +1,5 @@
 # Workspace Memory
-> Updated: 2026-02-04T03:13:35Z | Size: 18.4k chars
+> Updated: 2026-02-04T23:42:21Z | Size: 19.9k chars
 
 ### Remember Tool Wiring
 - `crates/g3-core/src/tools/memory.rs` [0..5000] - `execute_remember()`, `get_memory_path()`, `merge_memory()`
@@ -342,3 +342,28 @@ Machine-readable invariants for Plan Mode verification.
 
 **Selector syntax**: `foo.bar` (nested), `foo[0]` (index), `foo[*]` (wildcard)
 **Predicate rules**: contains, equals, exists, not_exists, min_length, max_length, greater_than, less_than, matches
+
+### Studio SDLC Pipeline Command
+Orchestrates 7 g3 agents in sequence for codebase maintenance.
+
+- `crates/studio/src/sdlc.rs`
+  - `PIPELINE_STAGES` [28..62] - static array of 7 agents: euler, breaker, hopper, fowler, carmack, lamport, huffman
+  - `Stage` [18..26] - name, description, focus fields
+  - `StageStatus` [65..80] - enum: Pending, Running, Complete, Failed, Skipped
+  - `PipelineState` [108..140] - run_id, stages[], commit_cursor, session_id
+  - `PipelineState::load()` [165..185] - loads from analysis/sdlc/pipeline.json, handles corruption
+  - `PipelineState::save()` [188..200] - persists state for crash recovery
+  - `PipelineState::resume()` [330..340] - finds first incomplete stage, resets Running→Pending
+  - `display_pipeline()` [354..390] - box display with status icons (○/◉/✓/✗/⊘)
+  - `generate_summary()` [410..475] - markdown table of results
+
+- `crates/studio/src/main.rs`
+  - `SdlcAction` [88..104] - enum: Run{commits}, Status, Reset
+  - `cmd_sdlc_run()` [540..655] - orchestrates pipeline in worktree
+  - `cmd_sdlc_status()` [658..695] - displays current state
+  - `cmd_sdlc_reset()` [698..710] - clears pipeline state
+  - `run_agent_in_worktree()` [770..800] - executes g3 --agent in worktree
+
+**Pipeline Order**: euler → breaker → hopper → fowler → carmack → lamport → huffman
+**State Storage**: `analysis/sdlc/pipeline.json` (git-tracked)
+**CLI**: `studio sdlc run [-c N]`, `studio sdlc status`, `studio sdlc reset`

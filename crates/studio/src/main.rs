@@ -9,6 +9,7 @@ use std::process::{Command, Stdio};
 use termimad::MadSkin;
 
 mod git;
+mod sdlc;
 mod session;
 
 use git::GitWorktree;
@@ -82,6 +83,30 @@ enum Commands {
         /// Session ID
         session_id: String,
     },
+
+    /// Run the SDLC maintenance pipeline
+    Sdlc {
+        #[command(subcommand)]
+        action: SdlcAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum SdlcAction {
+    /// Run the SDLC pipeline (or resume if interrupted)
+    Run {
+        /// Number of commits to process per stage (default: 10)
+        #[arg(long, short, default_value = "10")]
+        commits: u32,
+
+        /// Set the commit cursor to start from (skips commits before this)
+        #[arg(long)]
+        from: Option<String>,
+    },
+    /// Show current pipeline status
+    Status,
+    /// Reset pipeline state (start fresh)
+    Reset,
 }
 
 fn main() -> Result<()> {
@@ -96,6 +121,11 @@ fn main() -> Result<()> {
         Commands::Status { session_id } => cmd_status(&session_id),
         Commands::Accept { session_id } => cmd_accept(&session_id),
         Commands::Discard { session_id } => cmd_discard(&session_id),
+        Commands::Sdlc { action } => match action {
+            SdlcAction::Run { commits, from } => cmd_sdlc_run(commits, from),
+            SdlcAction::Status => cmd_sdlc_status(),
+            SdlcAction::Reset => cmd_sdlc_reset(),
+        },
     }
 }
 
@@ -508,6 +538,292 @@ fn cmd_discard(session_id: &str) -> Result<()> {
     println!("[\x1b[1;33mdiscarded\x1b[0m]");
 
     Ok(())
+}
+
+/// Run the SDLC pipeline
+fn cmd_sdlc_run(commits_per_run: u32, from_commit: Option<String>) -> Result<()> {
+    let repo_root = get_repo_root()?;
+    
+    // Load or create pipeline state
+    let mut state = match sdlc::PipelineState::load(&repo_root)? {
+        Some(mut existing) => {
+            // Resume from where we left off
+            existing.resume();
+            println!("\x1b[1;32msdlc:\x1b[0m resuming pipeline run \x1b[38;2;216;177;114m{}\x1b[0m", existing.run_id);
+            existing
+        }
+        None => {
+            let mut state = sdlc::PipelineState::new(commits_per_run);
+            // If --from is specified, set the cursor
+            if let Some(ref from) = from_commit {
+                // Resolve the commit hash
+                let resolved = resolve_commit(&repo_root, from)?;
+                state.commit_cursor = Some(resolved.clone());
+                println!("\x1b[1;32msdlc:\x1b[0m starting new pipeline run \x1b[38;2;216;177;114m{}\x1b[0m (from {})", 
+                    state.run_id, &resolved[..8.min(resolved.len())]);
+            } else {
+            println!("\x1b[1;32msdlc:\x1b[0m starting new pipeline run \x1b[38;2;216;177;114m{}\x1b[0m", state.run_id);
+            }
+            state
+        }
+    };
+    
+    // Get current HEAD commit
+    let head_commit = get_head_commit(&repo_root)?;
+    
+    // Check if there are commits to process
+    let commits_to_process = if let Some(cursor) = &state.commit_cursor {
+        count_commits_between(&repo_root, cursor, &head_commit)?
+    } else {
+        // First run - use commits_per_run as the count
+        commits_per_run
+    };
+    
+    if commits_to_process == 0 {
+        println!("\x1b[1;32msdlc:\x1b[0m no new commits since last run");
+        return Ok(());
+    }
+    
+    println!("\x1b[1;32msdlc:\x1b[0m {} commits to process", commits_to_process.min(commits_per_run));
+    
+    // Display the pipeline
+    sdlc::display_pipeline(&state);
+    
+    // Create a dedicated worktree for SDLC
+    let g3_binary = get_g3_binary_path()?;
+    let sdlc_session = Session::new("sdlc");
+    let worktree = GitWorktree::new(&repo_root);
+    let worktree_path = worktree.create(&sdlc_session)?;
+    
+    // Save session info for crash recovery
+    state.session_id = Some(sdlc_session.id.clone());
+    sdlc_session.save(&repo_root, &worktree_path)?;
+    state.save(&repo_root)?;
+    
+    // Run each stage
+    while !state.is_complete() && state.current_stage < sdlc::PIPELINE_STAGES.len() {
+        let stage = &sdlc::PIPELINE_STAGES[state.current_stage];
+        
+        // Display current stage
+        sdlc::display_current_stage(&state);
+        println!();
+        
+        // Mark as running and save
+        state.mark_running();
+        state.save(&repo_root)?;
+        
+        let start_time = std::time::Instant::now();
+        
+        // Build the task prompt for this agent
+        let task = format!(
+            "Focus on changes in the past {} commits (up to {}). {}",
+            commits_per_run.min(commits_to_process),
+            &head_commit[..8.min(head_commit.len())],
+            stage.focus
+        );
+        
+        // Run the agent
+        let result = run_agent_in_worktree(
+            &g3_binary,
+            &worktree_path,
+            stage.name,
+            &task,
+        );
+        
+        let duration = start_time.elapsed().as_secs();
+        
+        match result {
+            Ok(true) => {
+                // Success
+                state.mark_complete(duration, commits_to_process.min(commits_per_run), &head_commit);
+                println!();
+                println!("\x1b[1;32msdlc:\x1b[0m stage \x1b[1m{}\x1b[0m complete in {}", 
+                    stage.name, format_duration_short(duration));
+            }
+            Ok(false) => {
+                // Agent completed but with non-zero exit
+                state.mark_failed("Agent exited with non-zero status");
+                println!();
+                println!("\x1b[1;31msdlc:\x1b[0m stage \x1b[1m{}\x1b[0m failed", stage.name);
+                state.save(&repo_root)?;
+                break;
+            }
+            Err(e) => {
+                // Error running agent
+                state.mark_failed(&e.to_string());
+                println!();
+                println!("\x1b[1;31msdlc:\x1b[0m stage \x1b[1m{}\x1b[0m error: {}", stage.name, e);
+                state.save(&repo_root)?;
+                break;
+            }
+        }
+        
+        state.save(&repo_root)?;
+        
+        // Display updated pipeline
+        sdlc::display_pipeline(&state);
+    }
+    
+    // Cleanup worktree
+    worktree.remove(&sdlc_session)?;
+    sdlc_session.delete(&repo_root)?;
+    
+    // Generate and display summary
+    if state.is_complete() {
+        let summary = sdlc::generate_summary(&state);
+        println!("{}", summary);
+        
+        // Save summary to .g3/sessions/sdlc/
+        let summary_dir = repo_root.join(".g3").join("sessions").join("sdlc");
+        fs::create_dir_all(&summary_dir).ok();
+        let summary_path = summary_dir.join(format!("run-{}.md", state.run_id));
+        fs::write(&summary_path, &summary).ok();
+        
+        println!("\x1b[1;32msdlc:\x1b[0m pipeline complete!");
+    } else if state.has_failures() {
+        println!();
+        println!("\x1b[1;33msdlc:\x1b[0m pipeline paused due to failures");
+        println!("       Run 'studio sdlc run' to retry failed stages");
+    }
+    
+    Ok(())
+}
+
+/// Show SDLC pipeline status
+fn cmd_sdlc_status() -> Result<()> {
+    let repo_root = get_repo_root()?;
+    
+    match sdlc::PipelineState::load(&repo_root)? {
+        Some(state) => {
+            println!("\x1b[1;32msdlc:\x1b[0m pipeline run \x1b[38;2;216;177;114m{}\x1b[0m", state.run_id);
+            sdlc::display_pipeline(&state);
+            
+            if state.is_complete() {
+                println!("Status: \x1b[1;32mComplete\x1b[0m");
+            } else if state.has_failures() {
+                println!("Status: \x1b[1;31mFailed\x1b[0m (run 'studio sdlc run' to retry)");
+            } else {
+                println!("Status: \x1b[1;33mIn Progress\x1b[0m (stage {}/{})", 
+                    state.current_stage + 1, sdlc::PIPELINE_STAGES.len());
+            }
+            
+            if let Some(cursor) = &state.commit_cursor {
+                println!("Commit cursor: {}", cursor);
+            }
+        }
+        None => {
+            println!("\x1b[1;32msdlc:\x1b[0m no active pipeline");
+            println!();
+            println!("Run 'studio sdlc run' to start a new pipeline");
+        }
+    }
+    
+    Ok(())
+}
+
+/// Reset SDLC pipeline state
+fn cmd_sdlc_reset() -> Result<()> {
+    let repo_root = get_repo_root()?;
+    
+    if sdlc::PipelineState::load(&repo_root)?.is_some() {
+        sdlc::PipelineState::delete(&repo_root)?;
+        println!("\x1b[1;32msdlc:\x1b[0m pipeline state reset");
+    } else {
+        println!("\x1b[1;32msdlc:\x1b[0m no pipeline state to reset");
+    }
+    
+    Ok(())
+}
+
+/// Format duration in short form
+fn format_duration_short(secs: u64) -> String {
+    if secs < 60 {
+        format!("{}s", secs)
+    } else if secs < 3600 {
+        format!("{}m {}s", secs / 60, secs % 60)
+    } else {
+        format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
+    }
+}
+
+/// Resolve a commit reference (hash, branch, tag, etc.) to a full hash
+fn resolve_commit(repo_root: &Path, commit_ref: &str) -> Result<String> {
+    let output = Command::new("git")
+        .current_dir(repo_root)
+        .args(["rev-parse", commit_ref])
+        .output()
+        .context("Failed to resolve commit")?;
+
+    if !output.status.success() {
+        bail!("Failed to resolve commit '{}'", commit_ref);
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Get the current HEAD commit hash
+fn get_head_commit(repo_root: &Path) -> Result<String> {
+    let output = Command::new("git")
+        .current_dir(repo_root)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .context("Failed to get HEAD commit")?;
+
+    if !output.status.success() {
+        bail!("Failed to get HEAD commit");
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Count commits between two refs
+fn count_commits_between(repo_root: &Path, from: &str, to: &str) -> Result<u32> {
+    let output = Command::new("git")
+        .current_dir(repo_root)
+        .args(["rev-list", "--count", &format!("{}..{}", from, to)])
+        .output()
+        .context("Failed to count commits")?;
+
+    if !output.status.success() {
+        // If the from commit doesn't exist (first run), return a large number
+        return Ok(u32::MAX);
+    }
+
+    let count: u32 = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse()
+        .unwrap_or(0);
+    
+    Ok(count)
+}
+
+/// Run a g3 agent in a worktree
+fn run_agent_in_worktree(
+    g3_binary: &Path,
+    worktree_path: &Path,
+    agent: &str,
+    task: &str,
+) -> Result<bool> {
+    let mut cmd = Command::new(g3_binary);
+    cmd.arg("--workspace").arg(worktree_path);
+    cmd.arg("--agent").arg(agent);
+    cmd.arg(task);
+    cmd.current_dir(worktree_path);
+    cmd.stdout(Stdio::inherit());
+    cmd.stderr(Stdio::inherit());
+
+    let status = cmd.status().context("Failed to run g3 agent")?;
+    
+    // If the agent made commits, commit them
+    if status.success() {
+        // Stage and commit any changes made by the agent
+        let _ = Command::new("git")
+            .current_dir(worktree_path)
+            .args(["add", "-A"])
+            .output();
+    }
+    
+    Ok(status.success())
 }
 
 /// Check if a process is running by PID
