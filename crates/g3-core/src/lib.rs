@@ -31,7 +31,7 @@ pub use retry::{execute_with_retry, retry_operation, RetryConfig, RetryResult};
 pub use session_continuation::{
     clear_continuation, find_incomplete_agent_session, format_session_time, get_session_dir,
     has_valid_continuation, list_sessions_for_directory, load_context_from_session_log,
-    load_continuation, save_continuation, SessionContinuation,
+    load_continuation, load_continuation_by_id, save_continuation, SessionContinuation,
 };
 pub use task_result::TaskResult;
 

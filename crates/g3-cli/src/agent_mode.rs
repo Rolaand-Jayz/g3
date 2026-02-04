@@ -44,6 +44,25 @@ pub async fn run_agent_mode(
     // Skip session resume entirely when in chat mode (--agent --chat)
     let resuming_session = if chat {
         None // Chat mode always starts fresh
+    } else if let Some(ref session_id) = flags.resume {
+        // Explicit --resume flag takes precedence
+        match g3_core::load_continuation_by_id(session_id) {
+            Ok(continuation) => {
+                // Verify the session matches this agent (or allow any if agent name matches)
+                if continuation.agent_name.as_deref() != Some(agent_name) {
+                    eprintln!("Error: Session '{}' belongs to agent '{}', not '{}'",
+                        session_id,
+                        continuation.agent_name.as_deref().unwrap_or("(none)"),
+                        agent_name);
+                    std::process::exit(1);
+                }
+                Some(continuation)
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        }
     } else if flags.new_session {
         if !chat {
             output.print("\n🆕 Starting new session (--new-session flag set)");

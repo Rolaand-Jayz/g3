@@ -30,6 +30,8 @@ pub struct CommonFlags {
     pub acd: bool,
     /// Load a project from the given path at startup
     pub project: Option<PathBuf>,
+    /// Resume a specific session by ID
+    pub resume: Option<String>,
 }
 
 #[derive(Parser, Clone)]
@@ -136,6 +138,10 @@ pub struct Cli {
     #[arg(long)]
     pub new_session: bool,
 
+    /// Resume a specific session by ID (full or partial prefix)
+    #[arg(long, value_name = "SESSION_ID", conflicts_with = "new_session")]
+    pub resume: Option<String>,
+
     /// Automatically remind LLM to call remember tool after turns with tool calls
     #[arg(long)]
     pub auto_memory: bool,
@@ -172,6 +178,7 @@ impl Cli {
             no_auto_memory: self.no_auto_memory,
             acd: self.acd,
             project: self.project.clone(),
+            resume: self.resume.clone(),
         }
     }
 }

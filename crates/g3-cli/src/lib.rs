@@ -246,13 +246,38 @@ async fn run_console_mode(
         agent.save_session_continuation(Some(result.response.clone()));
         Ok(())
     } else {
+        // Handle --resume flag: load and restore specific session
+        if let Some(ref session_id) = cli.resume {
+            use crate::g3_status::{G3Status, Status};
+            
+            match g3_core::load_continuation_by_id(session_id) {
+                Ok(continuation) => {
+                    match agent.restore_from_continuation(&continuation) {
+                        Ok(true) => {
+                            G3Status::resuming(&continuation.session_id, Status::Done);
+                        }
+                        Ok(false) => {
+                            G3Status::resuming_summary(&continuation.session_id);
+                        }
+                        Err(e) => {
+                            G3Status::resuming(&continuation.session_id, Status::Error(e.to_string()));
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        
         run_interactive(
             agent,
             cli.show_prompt,
             cli.show_code,
             combined_content,
             project.workspace(),
-            cli.new_session,
+            cli.new_session || cli.resume.is_some(), // Skip auto-resume prompt if --resume was used
             None, // agent_name (not in agent mode)
             initial_project,
         )

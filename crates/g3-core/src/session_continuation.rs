@@ -221,6 +221,113 @@ pub fn load_continuation() -> Result<Option<SessionContinuation>> {
     Ok(Some(continuation))
 }
 
+/// Load a session continuation by session ID (full or partial prefix match).
+/// 
+/// This function searches for sessions matching the given ID:
+/// - First looks for `latest.json` (saved continuation artifact)
+/// - Falls back to constructing a continuation from `session.json` if available
+/// 
+/// This function searches for sessions matching the given ID:
+/// - If an exact match is found, it returns that session
+/// - If a unique prefix match is found, it returns that session
+/// - If multiple sessions match the prefix, it returns an error listing them
+/// - If no sessions match, it returns an error
+/// 
+/// The session must be in the current working directory.
+pub fn load_continuation_by_id(session_id: &str) -> Result<SessionContinuation> {
+    let sessions_dir = get_sessions_dir();
+    
+    if !sessions_dir.exists() {
+        anyhow::bail!("No sessions directory found. No sessions have been created yet.");
+    }
+    
+    let current_dir = std::env::current_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    
+    let mut matches: Vec<SessionContinuation> = Vec::new();
+    
+    // Scan all session directories for matches
+    for entry in std::fs::read_dir(&sessions_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        
+        if !path.is_dir() {
+            continue;
+        }
+        
+        let dir_name = path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+        
+        // Check if this session ID matches (exact or prefix)
+        if !dir_name.starts_with(session_id) {
+            continue;
+        }
+        
+        // Check for latest.json in this session directory
+        let latest_path = path.join(CONTINUATION_FILENAME);
+        let session_json_path = path.join("session.json");
+        
+        // Try to load from latest.json first, then fall back to session.json
+        let continuation: SessionContinuation = if latest_path.exists() {
+            let json = std::fs::read_to_string(&latest_path)?;
+            serde_json::from_str(&json)?
+        } else if session_json_path.exists() {
+            // Construct a continuation from session.json
+            let json = std::fs::read_to_string(&session_json_path)?;
+            let session_data: serde_json::Value = serde_json::from_str(&json)?;
+            
+            // Extract working directory from session data
+            let working_dir = session_data
+                .get("working_directory")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            
+            // Extract context percentage
+            let context_pct = session_data
+                .get("context_window")
+                .and_then(|cw| cw.get("percentage_used"))
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0) as f32;
+            
+            SessionContinuation {
+                version: CONTINUATION_VERSION.to_string(),
+                is_agent_mode: session_data.get("is_agent_mode").and_then(|v| v.as_bool()).unwrap_or(false),
+                agent_name: session_data.get("agent_name").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                created_at: session_data.get("timestamp").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+                session_id: dir_name.to_string(),
+                description: None,
+                summary: None,
+                session_log_path: session_json_path.to_string_lossy().to_string(),
+                context_percentage: context_pct,
+                todo_snapshot: None,
+                working_directory: working_dir,
+            }
+        } else {
+            continue;
+        };
+        
+        // Only include sessions from the current working directory
+        // If working_directory is empty (constructed from session.json without this field),
+        // we allow it since the user is explicitly requesting by ID
+        if continuation.working_directory.is_empty() 
+            || continuation.working_directory == current_dir {
+            matches.push(continuation);
+        }
+    }
+    
+    match matches.len() {
+        0 => anyhow::bail!("No session found matching '{}' in current directory", session_id),
+        1 => Ok(matches.remove(0)),
+        _ => {
+            let ids: Vec<_> = matches.iter().map(|s| s.session_id.as_str()).collect();
+            anyhow::bail!("Multiple sessions match '{}': {}", session_id, ids.join(", "));
+        }
+    }
+}
+
 /// Clear the session continuation symlink (for /clear command)
 /// This only removes the symlink, not the actual session data
 pub fn clear_continuation() -> Result<()> {
