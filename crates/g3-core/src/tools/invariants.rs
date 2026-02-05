@@ -974,6 +974,74 @@ fn format_predicate_markdown(
     }
 }
 
+/// Format an action envelope as human-readable markdown.
+/// 
+/// This produces a rich, readable format suitable for tool output,
+/// showing the facts recorded about completed work.
+pub fn format_envelope_markdown(envelope: &ActionEnvelope) -> String {
+    let mut output = String::new();
+    
+    output.push_str("\n");
+    output.push_str("### Action Envelope\n\n");
+    
+    if envelope.facts.is_empty() {
+        output.push_str("_No facts recorded._\n");
+        return output;
+    }
+    
+    // Sort facts by key for consistent output
+    let mut keys: Vec<_> = envelope.facts.keys().collect();
+    keys.sort();
+    
+    for key in keys {
+        if let Some(value) = envelope.facts.get(key) {
+            output.push_str(&format!("**{}**:\n", key));
+            format_yaml_value_markdown(&mut output, value, 0);
+            output.push_str("\n");
+        }
+    }
+    
+    output
+}
+
+/// Format a YAML value as indented markdown.
+fn format_yaml_value_markdown(output: &mut String, value: &YamlValue, indent: usize) {
+    let prefix = "  ".repeat(indent);
+    match value {
+        YamlValue::Null => output.push_str(&format!("{}  - _null_\n", prefix)),
+        YamlValue::Bool(b) => output.push_str(&format!("{}  - `{}`\n", prefix, b)),
+        YamlValue::Number(n) => output.push_str(&format!("{}  - `{}`\n", prefix, n)),
+        YamlValue::String(s) => output.push_str(&format!("{}  - `{}`\n", prefix, s)),
+        YamlValue::Sequence(seq) => {
+            for item in seq {
+                match item {
+                    YamlValue::String(s) => output.push_str(&format!("{}  - `{}`\n", prefix, s)),
+                    YamlValue::Number(n) => output.push_str(&format!("{}  - `{}`\n", prefix, n)),
+                    YamlValue::Bool(b) => output.push_str(&format!("{}  - `{}`\n", prefix, b)),
+                    _ => format_yaml_value_markdown(output, item, indent + 1),
+                }
+            }
+        }
+        YamlValue::Mapping(map) => {
+            for (k, v) in map {
+                let key_str = yaml_to_display(k);
+                match v {
+                    YamlValue::String(s) => output.push_str(&format!("{}  - {}: `{}`\n", prefix, key_str, s)),
+                    YamlValue::Number(n) => output.push_str(&format!("{}  - {}: `{}`\n", prefix, key_str, n)),
+                    YamlValue::Bool(b) => output.push_str(&format!("{}  - {}: `{}`\n", prefix, key_str, b)),
+                    YamlValue::Null => output.push_str(&format!("{}  - {}: _null_\n", prefix, key_str)),
+                    YamlValue::Sequence(_) | YamlValue::Mapping(_) => {
+                        output.push_str(&format!("{}  - {}:\n", prefix, key_str));
+                        format_yaml_value_markdown(output, v, indent + 2);
+                    }
+                    YamlValue::Tagged(t) => output.push_str(&format!("{}  - {}: !{} ...\n", prefix, key_str, t.tag)),
+                }
+            }
+        }
+        YamlValue::Tagged(t) => output.push_str(&format!("{}  - !{} ...\n", prefix, t.tag)),
+    }
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -1396,5 +1464,52 @@ mod tests {
         
         assert!(output.contains("**From Task:**"));
         assert!(!output.contains("**From Memory:**"));
+    }
+
+    // ========================================================================
+    // Format Envelope Markdown Tests
+    // ========================================================================
+
+    #[test]
+    fn test_format_envelope_markdown_empty() {
+        let envelope = ActionEnvelope::new();
+        let output = format_envelope_markdown(&envelope);
+        
+        assert!(output.contains("### Action Envelope"));
+        assert!(output.contains("_No facts recorded._"));
+    }
+
+    #[test]
+    fn test_format_envelope_markdown_with_facts() {
+        let mut envelope = ActionEnvelope::new();
+        envelope.add_fact(
+            "csv_importer",
+            serde_yaml::from_str(r#"
+                capabilities:
+                  - handle_headers
+                  - handle_tsv
+                file: src/import/csv.rs
+            "#).unwrap(),
+        );
+        
+        let output = format_envelope_markdown(&envelope);
+        
+        assert!(output.contains("### Action Envelope"));
+        assert!(output.contains("**csv_importer**:"));
+        assert!(output.contains("`handle_headers`"));
+        assert!(output.contains("`handle_tsv`"));
+        assert!(output.contains("`src/import/csv.rs`"));
+    }
+
+    #[test]
+    fn test_format_envelope_markdown_with_null_value() {
+        let mut envelope = ActionEnvelope::new();
+        envelope.add_fact("breaking_changes", YamlValue::Null);
+        
+        let output = format_envelope_markdown(&envelope);
+        
+        assert!(output.contains("### Action Envelope"));
+        assert!(output.contains("**breaking_changes**:"));
+        assert!(output.contains("_null_"));
     }
 }

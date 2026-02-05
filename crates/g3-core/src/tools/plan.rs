@@ -20,7 +20,7 @@ use crate::ToolCall;
 
 use super::executor::ToolContext;
 
-use super::invariants::{format_rulespec_markdown, get_envelope_path, get_rulespec_path, read_rulespec};
+use super::invariants::{format_envelope_markdown, format_rulespec_markdown, get_envelope_path, get_rulespec_path, read_envelope, read_rulespec};
 
 // ============================================================================
 // Plan Schema
@@ -798,11 +798,27 @@ pub async fn execute_plan_read<W: UiWriter>(
         Some(plan) => {
             let yaml = serde_yaml::to_string(&plan)?;
             ctx.ui_writer.print_plan_compact(Some(&yaml), Some(&plan_path_str), false);
-            Ok(format!(
+            
+            // Build output with plan
+            let mut output = format!(
                 "📋 {}\n\n```yaml\n{}```",
                 plan.status_summary(),
                 yaml
-            ))
+            );
+            
+            // Append rulespec if present
+            match read_rulespec(session_id) {
+                Ok(Some(rulespec)) => output.push_str(&format_rulespec_markdown(&rulespec)),
+                _ => output.push_str("\n\n_No rulespec generated._\n"),
+            }
+            
+            // Append envelope if present
+            match read_envelope(session_id) {
+                Ok(Some(envelope)) => output.push_str(&format_envelope_markdown(&envelope)),
+                _ => output.push_str("\n_No envelope generated._\n"),
+            }
+            
+            Ok(output)
         }
         None => {
             ctx.ui_writer.print_plan_compact(None, None, false);
@@ -885,22 +901,31 @@ pub async fn execute_plan_write<W: UiWriter>(
         Err(_) => "\n_No rulespec generated._\n".to_string(),
     };
 
+    // Read and format envelope if it exists
+    let envelope_section = match read_envelope(session_id) {
+        Ok(Some(envelope)) => format_envelope_markdown(&envelope),
+        Ok(None) => "\n_No envelope generated._\n".to_string(),
+        Err(_) => "\n_No envelope generated._\n".to_string(),
+    };
+
     // Check if plan is now complete and trigger verification
     if plan.is_complete() && plan.is_approved() {
         let verification = plan_verify(&plan, ctx.working_dir);
         let verification_output = format_verification_results(&verification, ctx.session_id);
         return Ok(format!(
-            "✅ Plan updated: {}\n{}\n{}",
+            "✅ Plan updated: {}\n{}\n{}\n{}",
             plan.status_summary(),
             verification_output,
-            rulespec_section
+            rulespec_section,
+            envelope_section
         ));
     }
 
     Ok(format!(
-        "✅ Plan updated: {}\n{}",
+        "✅ Plan updated: {}\n{}\n{}",
         plan.status_summary(),
-        rulespec_section
+        rulespec_section,
+        envelope_section
     ))
 }
 
