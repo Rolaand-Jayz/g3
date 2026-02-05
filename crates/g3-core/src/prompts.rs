@@ -169,7 +169,7 @@ pub fn get_system_prompt_for_non_native_with_skills(skills: &[Skill]) -> String 
 }
 
 /// The G3 identity line that gets replaced in agent mode
-const G3_IDENTITY_LINE: &str = "You are G3, an AI programming agent of the same skill level as a seasoned engineer at a major technology company. You analyze given tasks and write code to achieve goals.";
+const G3_IDENTITY_LINE: &str = "You are G3, an AI programming agent.";
 
 /// Generate a system prompt for agent mode by combining the agent's custom prompt
 /// with the full G3 system prompt (including plan tools, code search, webdriver, coding style, etc.)
@@ -200,29 +200,29 @@ mod tests {
     #[test]
     fn test_native_prompt_contains_validation_string() {
         let prompt = get_system_prompt_for_native();
-        assert!(prompt.contains("You have access to tools"),
-            "Native prompt must contain validation string");
+        assert!(prompt.contains("Use tools to accomplish tasks"),
+            "Native prompt must contain tool usage instruction");
     }
 
     #[test]
     fn test_non_native_prompt_contains_validation_string() {
         let prompt = get_system_prompt_for_non_native();
-        assert!(prompt.contains("You have access to tools"),
-            "Non-native prompt must contain validation string");
+        assert!(prompt.contains("Use tools to accomplish tasks"),
+            "Non-native prompt must contain tool usage instruction");
     }
 
     #[test]
     fn test_native_prompt_contains_important_directive() {
         let prompt = get_system_prompt_for_native();
-        assert!(prompt.contains("IMPORTANT: You must call tools to achieve goals"),
-            "Native prompt must contain IMPORTANT directive");
+        assert!(prompt.contains("# Task Management with Plan Mode"),
+            "Native prompt must contain Plan Mode section");
     }
 
     #[test]
     fn test_non_native_prompt_contains_important_directive() {
         let prompt = get_system_prompt_for_non_native();
-        assert!(prompt.contains("IMPORTANT: You must call tools to achieve goals"),
-            "Non-native prompt must contain IMPORTANT directive");
+        assert!(prompt.contains("# Task Management with Plan Mode"),
+            "Non-native prompt must contain Plan Mode section");
     }
 
     #[test]

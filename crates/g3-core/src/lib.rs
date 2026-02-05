@@ -438,12 +438,12 @@ impl<W: UiWriter> Agent<W> {
 
         // Check for system prompt markers that are present in both standard and agent mode
         // Check for system prompt markers that are present in both native and non-native prompts
-        // Both prompts contain "You have access to tools" as a common marker
+        // Both prompts contain "Use tools to accomplish tasks" as a common marker
         let has_tool_instructions = first_message
             .content
-            .contains("You have access to tools");
+            .contains("Use tools to accomplish tasks");
         if !has_tool_instructions {
-            panic!("FATAL: First system message does not contain the system prompt marker 'You have access to tools'. This likely means the README was added before the system prompt.");
+            panic!("FATAL: First system message does not contain the system prompt marker 'Use tools to accomplish tasks'. This likely means the README was added before the system prompt.");
         }
     }
 
