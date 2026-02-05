@@ -41,10 +41,9 @@ pub async fn run_agent_mode(
     std::env::set_current_dir(&workspace_dir)?;
 
     // Check for incomplete agent sessions before starting a new one
-    // Skip session resume entirely when in chat mode (--agent --chat)
-    let resuming_session = if chat {
-        None // Chat mode always starts fresh
-    } else if let Some(ref session_id) = flags.resume {
+    // When --resume is explicitly provided, always honor it (even in chat mode)
+    // Otherwise, chat mode starts fresh (no auto-resume of incomplete sessions)
+    let resuming_session = if let Some(ref session_id) = flags.resume {
         // Explicit --resume flag takes precedence
         match g3_core::load_continuation_by_id(session_id) {
             Ok(continuation) => {
@@ -63,6 +62,9 @@ pub async fn run_agent_mode(
                 std::process::exit(1);
             }
         }
+    } else if chat {
+        // Chat mode without explicit --resume starts fresh (no auto-resume)
+        None
     } else if flags.new_session {
         if !chat {
             output.print("\n🆕 Starting new session (--new-session flag set)");
