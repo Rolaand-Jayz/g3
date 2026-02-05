@@ -112,7 +112,9 @@ pub fn get_language_prompts_for_workspace(workspace_dir: &Path) -> Option<String
     let mut prompts = Vec::new();
     for lang in detected {
         if let Some(content) = get_language_prompt(lang) {
-            prompts.push(content);
+            if !content.is_empty() {
+                prompts.push(content);
+            }
         }
     }
 
@@ -243,5 +245,16 @@ mod tests {
         assert!(prompts.is_some());
         let content = prompts.unwrap();
         assert!(content.contains("obvious, readable Racket"));
+    }
+
+    #[test]
+    fn test_rust_only_returns_none() {
+        // Rust has an empty prompt, so a Rust-only workspace should return None
+        let temp_dir = TempDir::new().unwrap();
+        let rs_file = temp_dir.path().join("main.rs");
+        fs::write(&rs_file, "fn main() {}").unwrap();
+
+        let prompts = get_language_prompts_for_workspace(temp_dir.path());
+        assert!(prompts.is_none(), "Rust-only workspace should return None since Rust has no base prompt");
     }
 }
