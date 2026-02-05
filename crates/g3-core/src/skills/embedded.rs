@@ -24,12 +24,7 @@ pub struct EmbeddedSkill {
 /// To add a new embedded skill:
 /// 1. Create `skills/<name>/SKILL.md` in the repo
 /// 2. Add an entry here with `include_str!`
-static EMBEDDED_SKILLS: &[EmbeddedSkill] = &[
-    EmbeddedSkill {
-        name: "research",
-        skill_md: include_str!("../../../../skills/research/SKILL.md"),
-    },
-];
+static EMBEDDED_SKILLS: &[EmbeddedSkill] = &[];
 
 /// Get all embedded skills.
 pub fn get_embedded_skills() -> &'static [EmbeddedSkill] {
@@ -46,23 +41,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_embedded_skills_exist() {
+    fn test_embedded_skills_empty() {
+        // Currently no embedded skills - research was moved to first-class tool
         let skills = get_embedded_skills();
-        assert!(!skills.is_empty(), "Should have at least one embedded skill");
+        assert!(skills.is_empty(), "No embedded skills expected");
     }
 
     #[test]
-    fn test_research_skill_embedded() {
-        let skill = get_embedded_skill("research");
-        assert!(skill.is_some(), "Research skill should be embedded");
-        
-        let skill = skill.unwrap();
-        assert!(skill.skill_md.contains("name: research"), "SKILL.md should have name field");
-    }
-
-    #[test]
-    fn test_get_by_name() {
-        assert!(get_embedded_skill("research").is_some());
+    fn test_get_nonexistent_skill() {
         assert!(get_embedded_skill("nonexistent").is_none());
     }
 }

@@ -221,9 +221,9 @@ Portable skill packages with SKILL.md + optional scripts per Agent Skills spec (
   - `discover_skills()` [38..85] - scans 5 locations: embedded → global → extra → workspace → repo
   - `load_embedded_skills()` [88..102] - synthetic path `<embedded:name>/SKILL.md`
   - `is_embedded_skill()` [161..163] - checks `<embedded:` prefix
-- `crates/g3-core/src/skills/embedded.rs` [0..87]
-  - `EmbeddedSkill` [22..28] - name, skill_md, scripts[]
-  - `EMBEDDED_SKILLS` [32..42] - static array with include_str! for research skill
+- `crates/g3-core/src/skills/embedded.rs` [0..55]
+  - `EmbeddedSkill` [15..20] - name, skill_md
+  - `EMBEDDED_SKILLS` [27] - static array (currently empty)
 - `crates/g3-core/src/skills/extraction.rs` [0..234]
   - `extract_script()` [28..85] - extracts to `.g3/bin/`, tracks version hash
   - `needs_update()` [107..118] - compares stored hash vs content
@@ -250,22 +250,25 @@ compatibility: Requires X # Optional
 # Instructions...
 ```
 
-### Research Skill (Embedded)
-Async web research via background scout agent. Externalized from core to embedded skill.
+### Research Tool (First-Class)
+Async web research via background scout agent. Implemented as a first-class tool (not a skill).
 
-- `skills/research/SKILL.md` - skill definition
-- `skills/research/g3-research` - bash script for async research
-  - `write_status()` - writes status.json
-  - `extract_report()` - extracts between markers or filters output
+- `crates/g3-core/src/pending_research.rs` [0..547]
+  - `PendingResearchManager` - thread-safe task tracking with Arc<RwLock>
+  - `ResearchTask`, `ResearchStatus` - task state (Pending/Complete/Failed)
+  - `register()`, `complete()`, `fail()`, `get()`, `list_pending()`, `take_completed()`
+  - `with_notifications()` - broadcast channel for interactive mode
+- `crates/g3-core/src/tools/research.rs` [0..471]
+  - `execute_research()` - spawns scout agent in background tokio task
+  - `execute_research_status()` - check status of pending/completed research
+  - `CONTEXT_ERROR_PATTERNS` - detects context window exhaustion
+  - `strip_ansi_codes()`, `extract_report()` - report extraction utilities
+- `crates/g3-core/src/lib.rs`
+  - `Agent.pending_research_manager` - field on Agent struct
+  - `inject_completed_research()` [781..836] - injects results as user messages
+  - `enable_research_notifications()` - for interactive mode
 
-**Usage**:
-```bash
-background_process("research-topic", ".g3/bin/g3-research 'query'")
-shell(".g3/bin/g3-research --status <id>")  # or --list
-read_file(".g3/research/<id>/report.md")
-```
-
-**Output**: `.g3/research/<id>/status.json` + `report.md`
+**Tools**: `research` (async, returns research_id), `research_status` (check pending tasks)
 
 ### Plan Mode
 Structured task planning with cognitive forcing - requires happy/negative/boundary checks.

@@ -259,14 +259,13 @@ Key modules in `crates/g3-core/src/skills/`:
 Core skills are embedded at compile time using `include_str!`, ensuring g3 works anywhere without external files:
 
 ```rust
+// Currently empty - skills can be added here as needed
 static EMBEDDED_SKILLS: &[EmbeddedSkill] = &[
-    EmbeddedSkill {
-        name: "research",
-        skill_md: include_str!("../../../../skills/research/SKILL.md"),
-        scripts: &[
-            ("g3-research", include_str!("../../../../skills/research/g3-research")),
-        ],
-    },
+    // Example:
+    // EmbeddedSkill {
+    //     name: "example-skill",
+    //     skill_md: include_str!("../../../../skills/example-skill/SKILL.md"),
+    // },
 ];
 ```
 

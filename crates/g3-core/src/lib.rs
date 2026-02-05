@@ -7,6 +7,7 @@ pub mod error_handling;
 pub mod feedback_extraction;
 pub mod paths;
 pub mod project;
+pub mod pending_research;
 pub mod provider_config;
 pub mod provider_registration;
 pub mod retry;
@@ -160,6 +161,8 @@ pub struct Agent<W: UiWriter> {
     acd_enabled: bool,
     /// Whether plan mode is active (gate blocks file changes without approved plan)
     in_plan_mode: bool,
+    /// Manager for async research tasks
+    pending_research_manager: pending_research::PendingResearchManager,
 }
 
 impl<W: UiWriter> Agent<W> {
@@ -214,6 +217,7 @@ impl<W: UiWriter> Agent<W> {
             auto_memory: false,
             acd_enabled: false,
             in_plan_mode: false,
+            pending_research_manager: pending_research::PendingResearchManager::new(),
         }
     }
 
@@ -765,6 +769,72 @@ impl<W: UiWriter> Agent<W> {
     /// Set the working directory (useful for testing)
     pub fn set_working_dir(&mut self, working_dir: String) {
         self.working_dir = Some(working_dir);
+    }
+
+    // =========================================================================
+    // RESEARCH MANAGEMENT
+    // =========================================================================
+
+    /// Inject completed research results into the conversation context.
+    ///
+    /// Returns the number of research results injected.
+    pub fn inject_completed_research(&mut self) -> usize {
+        let completed = self.pending_research_manager.take_completed();
+        
+        if completed.is_empty() {
+            return 0;
+        }
+        
+        for task in &completed {
+            let message_content = match task.status {
+                pending_research::ResearchStatus::Complete => {
+                    format!(
+                        "📋 **Research completed** (id: `{}`): {}\n\n{}",
+                        task.id,
+                        task.query,
+                        task.result.as_deref().unwrap_or("No result available")
+                    )
+                }
+                pending_research::ResearchStatus::Failed => {
+                    format!(
+                        "❌ **Research failed** (id: `{}`): {}\n\nError: {}",
+                        task.id,
+                        task.query,
+                        task.result.as_deref().unwrap_or("Unknown error")
+                    )
+                }
+                pending_research::ResearchStatus::Pending => continue, // Skip pending tasks
+            };
+            
+            // Inject as a user message so the agent sees and responds to it
+            let message = g3_providers::Message::new(g3_providers::MessageRole::User, message_content);
+            self.context_window.add_message(message);
+        }
+        
+        completed.len()
+    }
+
+    /// Subscribe to research completion notifications.
+    ///
+    /// Returns None if notifications are not enabled.
+    pub fn subscribe_research_notifications(&self) -> Option<tokio::sync::broadcast::Receiver<pending_research::ResearchCompletionNotification>> {
+        self.pending_research_manager.subscribe()
+    }
+
+    /// Enable research completion notifications and return a receiver.
+    ///
+    /// This replaces the internal research manager with one that sends notifications.
+    /// Call this once during setup (e.g., in interactive mode) before any research tasks.
+    /// Returns a receiver that will receive notifications when research tasks complete.
+    pub fn enable_research_notifications(&mut self) -> tokio::sync::broadcast::Receiver<pending_research::ResearchCompletionNotification> {
+        let (manager, rx) = pending_research::PendingResearchManager::with_notifications();
+        self.pending_research_manager = manager;
+        rx
+    }
+
+    /// Get a reference to the pending research manager.
+    pub fn pending_research_manager(&self) -> &pending_research::PendingResearchManager {
+        &self.pending_research_manager
     }
 
     // =========================================================================
@@ -2085,6 +2155,13 @@ Skip if nothing new. Be brief."#;
                 tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
             }
 
+            // Inject any completed research results into the context
+            let injected_count = self.inject_completed_research();
+            if injected_count > 0 {
+                debug!("Injected {} completed research result(s) into context", injected_count);
+                self.ui_writer.println(&format!("📋 {} research result(s) ready and injected into context", injected_count));
+            }
+
             // Get provider info for logging, then drop it to avoid borrow issues
             let (provider_name, provider_model) = {
                 let provider = self.providers.get(None)?;
@@ -2898,6 +2975,7 @@ Skip if nothing new. Be brief."#;
             webdriver_process: &self.webdriver_process,
             background_process_manager: &self.background_process_manager,
             todo_content: &self.todo_content,
+            pending_research_manager: &self.pending_research_manager,
             pending_images: &mut self.pending_images,
             is_autonomous: self.is_autonomous,
             requirements_sha: self.requirements_sha.as_deref(),

@@ -17,6 +17,7 @@ pub mod invariants;
 pub mod memory;
 pub mod misc;
 pub mod plan;
+pub mod research;
 pub mod shell;
 pub mod webdriver;
 

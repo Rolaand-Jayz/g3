@@ -913,18 +913,17 @@ mod tests {
 
     #[test]
     fn test_try_read_embedded_skill_unescaped() {
-        // Normal unescaped path should work
-        let result = try_read_embedded_skill("<embedded:research>/SKILL.md");
-        assert!(result.is_some(), "Should find embedded research skill");
-        assert!(result.unwrap().contains("name: research"));
+        // No embedded skills currently (research was moved to first-class tool)
+        let result = try_read_embedded_skill("<embedded:nonexistent>/SKILL.md");
+        assert!(result.is_none(), "Should not find nonexistent embedded skill");
     }
 
     #[test]
     fn test_try_read_embedded_skill_escaped() {
-        // XML-escaped path should also work (fallback for LLM quirks)
-        let result = try_read_embedded_skill("&lt;embedded:research&gt;/SKILL.md");
-        assert!(result.is_some(), "Should find embedded research skill with escaped path");
-        assert!(result.unwrap().contains("name: research"));
+        // XML-escaped path parsing should work even with no embedded skills
+        // This tests the path parsing, not the skill existence
+        let result = try_read_embedded_skill("&lt;embedded:nonexistent&gt;/SKILL.md");
+        assert!(result.is_none(), "Should not find nonexistent embedded skill with escaped path");
     }
 
     #[test]
@@ -940,7 +939,7 @@ mod tests {
         let result = try_read_embedded_skill("/path/to/SKILL.md");
         assert!(result.is_none(), "Regular path should not match");
         
-        let result = try_read_embedded_skill("skills/research/SKILL.md");
+        let result = try_read_embedded_skill("skills/example/SKILL.md");
         assert!(result.is_none(), "Relative path should not match");
     }
 }

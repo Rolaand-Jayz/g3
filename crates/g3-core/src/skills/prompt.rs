@@ -145,13 +145,13 @@ mod tests {
         // Embedded skill paths use <embedded:name> syntax which must NOT be escaped
         // so the LLM can use them directly with read_file
         let skills = vec![
-            make_skill("research", "Web research skill", "<embedded:research>/SKILL.md"),
+            make_skill("example-skill", "Example embedded skill", "<embedded:example-skill>/SKILL.md"),
         ];
         
         let result = generate_skills_prompt(&skills);
         
         // The path should appear unescaped
-        assert!(result.contains("<location><embedded:research>/SKILL.md</location>"));
+        assert!(result.contains("<location><embedded:example-skill>/SKILL.md</location>"));
         // Should NOT be escaped
         assert!(!result.contains("&lt;embedded:research&gt;"));
     }

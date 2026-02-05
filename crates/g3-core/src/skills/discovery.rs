@@ -182,12 +182,11 @@ mod tests {
     
     #[test]
     fn test_discover_embedded_skills() {
-        // With no directories, should still find embedded skills
+        // With no directories and no embedded skills, should return empty
         let skills = discover_skills(None, &[]);
         
-        // Should have at least the research skill
-        assert!(!skills.is_empty(), "Should have embedded skills");
-        assert!(skills.iter().any(|s| s.name == "research"), "Should have research skill");
+        // No embedded skills currently (research was moved to first-class tool)
+        assert!(skills.is_empty(), "Should have no skills when no directories provided");
     }
     
     #[test]
@@ -204,10 +203,9 @@ mod tests {
         
         let skills = discover_skills(Some(workspace), &[]);
         
-        // Should have embedded + workspace skills
+        // Should have workspace skills
         assert!(skills.iter().any(|s| s.name == "test-skill"));
         assert!(skills.iter().any(|s| s.name == "another-skill"));
-        assert!(skills.iter().any(|s| s.name == "research")); // embedded
     }
     
     #[test]
@@ -227,22 +225,20 @@ mod tests {
     }
     
     #[test]
-    fn test_repo_overrides_embedded() {
+    fn test_repo_skill_discovery() {
         let temp = TempDir::new().unwrap();
         let workspace = temp.path();
         
-        // Create repo skills directory with a skill that overrides embedded
+        // Create repo skills directory
         let skills_dir = workspace.join("skills");
         fs::create_dir_all(&skills_dir).unwrap();
         
-        // Override the embedded research skill
-        create_skill_dir(&skills_dir, "research", "Custom research skill");
+        create_skill_dir(&skills_dir, "custom-skill", "Custom skill");
         
         let skills = discover_skills(Some(workspace), &[]);
         
-        let research = skills.iter().find(|s| s.name == "research").unwrap();
-        assert_eq!(research.description, "Custom research skill");
-        assert!(!research.path.starts_with("<embedded:"), "Should not be marked as embedded");
+        let custom = skills.iter().find(|s| s.name == "custom-skill").unwrap();
+        assert_eq!(custom.description, "Custom skill");
     }
     
     #[test]
@@ -303,8 +299,8 @@ mod tests {
     #[test]
     fn test_nonexistent_directory() {
         let skills = discover_skills(Some(Path::new("/nonexistent/path")), &[]);
-        // Should still have embedded skills
-        assert!(!skills.is_empty());
+        // No embedded skills, so should be empty
+        assert!(skills.is_empty());
     }
     
     #[test]
@@ -314,8 +310,8 @@ mod tests {
         fs::create_dir_all(&skills_dir).unwrap();
         
         let skills = discover_skills(Some(temp.path()), &[]);
-        // Should still have embedded skills
-        assert!(!skills.is_empty());
+        // No embedded skills and empty directory, so should be empty
+        assert!(skills.is_empty());
     }
     
     #[test]

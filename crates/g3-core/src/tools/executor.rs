@@ -4,6 +4,7 @@ use anyhow::Result;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+use crate::pending_research::PendingResearchManager;
 use crate::background_process::BackgroundProcessManager;
 use crate::paths::{ensure_session_dir, get_session_todo_path, get_todo_path};
 use crate::ui_writer::UiWriter;
@@ -22,6 +23,7 @@ pub struct ToolContext<'a, W: UiWriter> {
     pub webdriver_process: &'a Arc<RwLock<Option<tokio::process::Child>>>,
     pub background_process_manager: &'a Arc<BackgroundProcessManager>,
     pub todo_content: &'a Arc<RwLock<String>>,
+    pub pending_research_manager: &'a PendingResearchManager,
     pub pending_images: &'a mut Vec<g3_providers::ImageContent>,
     pub is_autonomous: bool,
     pub requirements_sha: Option<&'a str>,

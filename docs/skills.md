@@ -157,14 +157,13 @@ Core skills are embedded into the g3 binary at compile time, ensuring they work 
 Embedded skills use Rust's `include_str!` macro to compile SKILL.md and scripts into the binary:
 
 ```rust
+// Currently empty - skills can be added here as needed
 static EMBEDDED_SKILLS: &[EmbeddedSkill] = &[
-    EmbeddedSkill {
-        name: "research",
-        skill_md: include_str!("../../../../skills/research/SKILL.md"),
-        scripts: &[
-            ("g3-research", include_str!("../../../../skills/research/g3-research")),
-        ],
-    },
+    // Example of how to add an embedded skill:
+    // EmbeddedSkill {
+    //     name: "example-skill",
+    //     skill_md: include_str!("../../../../skills/example-skill/SKILL.md"),
+    // },
 ];
 ```
 
@@ -181,48 +180,6 @@ This ensures:
 - Scripts are always available, even in fresh workspaces
 - Updates propagate automatically when g3 is upgraded
 - No manual installation required
-
-## The Research Skill
-
-The embedded `research` skill enables asynchronous web research:
-
-### Usage
-
-```bash
-# Start research (always use background_process)
-background_process("research-topic", ".g3/bin/g3-research 'Your query here'")
-
-# Check status
-shell(".g3/bin/g3-research --list")
-
-# Read results when complete
-read_file(".g3/research/<research-id>/report.md")
-```
-
-### How It Works
-
-1. **Start**: `g3-research` spawns a scout agent in the background
-2. **Execute**: Scout uses browser automation to research the topic
-3. **Save**: Results written to `.g3/research/<id>/report.md`
-4. **Read**: Agent reads the report when needed
-
-### Directory Structure
-
-```
-.g3/research/
-├── research_1738700000_a1b2c3/
-│   ├── status.json      # Machine-readable status
-│   └── report.md        # The research brief
-└── research_1738700100_d4e5f6/
-    ├── status.json
-    └── report.md
-```
-
-### Status Values
-
-- `running` - Research in progress
-- `complete` - Report ready to read
-- `failed` - Error occurred (check `error` field in status.json)
 
 ## Creating Skills with Scripts
 
@@ -299,12 +256,6 @@ If `.g3/bin/<script>` doesn't exist:
 1. The skill may not have been used yet (extraction is lazy)
 2. Check permissions on `.g3/bin/` directory
 3. Try deleting `.g3/bin/<script>.version` to force re-extraction
-
-### Research Skill Issues
-
-- **Takes too long**: Try a more specific query
-- **WebDriver errors**: Ensure Safari or Chrome WebDriver is configured
-- **Empty report**: Check `status.json` for error details
 
 ## Adding a New Embedded Skill
 

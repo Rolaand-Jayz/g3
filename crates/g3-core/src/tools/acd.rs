@@ -120,6 +120,7 @@ mod tests {
     use crate::acd::Fragment;
     use crate::ui_writer::NullUiWriter;
     use crate::background_process::BackgroundProcessManager;
+    use crate::pending_research::PendingResearchManager;
     use serial_test::serial;
     use crate::webdriver_session::WebDriverSession;
     use g3_providers::{Message, MessageRole};
@@ -134,6 +135,7 @@ mod tests {
         background_process_manager: Arc<BackgroundProcessManager>,
         todo_content: Arc<RwLock<String>>,
         pending_images: Vec<g3_providers::ImageContent>,
+        pending_research_manager: PendingResearchManager,
         config: g3_config::Config,
     }
 
@@ -146,6 +148,7 @@ mod tests {
                 background_process_manager: Arc::new(BackgroundProcessManager::new(std::path::PathBuf::from("/tmp"))),
                 todo_content: Arc::new(RwLock::new(String::new())),
                 pending_images: Vec::new(),
+                pending_research_manager: PendingResearchManager::new(),
                 config: g3_config::Config::default(),
             }
         }
@@ -164,6 +167,7 @@ mod tests {
             webdriver_process: &test_ctx.webdriver_process,
             background_process_manager: &test_ctx.background_process_manager,
             todo_content: &test_ctx.todo_content,
+            pending_research_manager: &test_ctx.pending_research_manager,
             pending_images: &mut test_ctx.pending_images,
             is_autonomous: false,
             requirements_sha: None,
@@ -194,6 +198,7 @@ mod tests {
             webdriver_process: &test_ctx.webdriver_process,
             background_process_manager: &test_ctx.background_process_manager,
             todo_content: &test_ctx.todo_content,
+            pending_research_manager: &test_ctx.pending_research_manager,
             pending_images: &mut test_ctx.pending_images,
             is_autonomous: false,
             requirements_sha: None,
@@ -224,6 +229,7 @@ mod tests {
             webdriver_process: &test_ctx.webdriver_process,
             background_process_manager: &test_ctx.background_process_manager,
             todo_content: &test_ctx.todo_content,
+            pending_research_manager: &test_ctx.pending_research_manager,
             pending_images: &mut test_ctx.pending_images,
             is_autonomous: false,
             requirements_sha: None,
