@@ -73,11 +73,6 @@ Short description for providers without native calling specs:
   - Multiple searches: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"funcs\", \"query\": \"(function_item name: (identifier) @name)\", \"language\": \"rust\"}, {\"name\": \"structs\", \"query\": \"(struct_item name: (type_identifier) @name)\", \"language\": \"rust\"}]}}
   - With context lines: {\"tool\": \"code_search\", \"args\": {\"searches\": [{\"name\": \"funcs\", \"query\": \"(function_item name: (identifier) @name)\", \"language\": \"rust\", \"context_lines\": 3}]}}
 
-- **research**: Perform web-based research and return a structured report
-  - Format: {\"tool\": \"research\", \"args\": {\"query\": \"your research question\"}}
-  - Example: {\"tool\": \"research\", \"args\": {\"query\": \"Best Rust HTTP client libraries for async/await\"}}
-  - Use for researching APIs, SDKs, libraries, approaches, bugs, or any topic requiring web research
-
 - **remember**: Save discovered code locations to workspace memory
   - Format: {\"tool\": \"remember\", \"args\": {\"notes\": \"markdown notes\"}}
   - Example: {\"tool\": \"remember\", \"args\": {\"notes\": \"### Feature Name\\n- `file.rs` [0..100] - `function_name()\"}}

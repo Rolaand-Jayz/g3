@@ -7,7 +7,7 @@ use anyhow::Result;
 use tracing::{debug, warn};
 
 use crate::tools::executor::ToolContext;
-use crate::tools::{acd, file_ops, memory, misc, plan, research, shell, webdriver};
+use crate::tools::{acd, file_ops, memory, misc, plan, shell, webdriver};
 use crate::ui_writer::UiWriter;
 use crate::ToolCall;
 
@@ -40,10 +40,11 @@ pub async fn dispatch_tool<W: UiWriter>(
         // Miscellaneous tools
         "code_search" => misc::execute_code_search(tool_call, ctx).await,
 
-        // Research tool
-        "research" => research::execute_research(tool_call, ctx).await,
-        "research_status" => research::execute_research_status(tool_call, ctx).await,
-
+        // Research tool (deprecated - now a skill)
+        "research" | "research_status" => {
+            Ok("⚠️ The `research` tool has been replaced by the **research skill**. Use `background_process` to run `.g3/bin/g3-research` instead. See the research skill documentation for details.".to_string())
+        }
+        
         // Workspace memory tools
         "remember" => memory::execute_remember(tool_call, ctx).await,
 

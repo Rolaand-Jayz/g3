@@ -7,7 +7,6 @@
 //! - `plan` - Plan Mode for structured task planning
 //! - `webdriver` - Browser automation via WebDriver
 //! - `misc` - Other tools (screenshots, code search, etc.)
-//! - `research` - Web research via scout agent
 //! - `memory` - Workspace memory (remember)
 //! - `acd` - Aggressive Context Dehydration (rehydrate)
 
@@ -18,7 +17,6 @@ pub mod invariants;
 pub mod memory;
 pub mod misc;
 pub mod plan;
-pub mod research;
 pub mod shell;
 pub mod webdriver;
 

@@ -820,13 +820,6 @@ impl UiWriter for ConsoleUiWriter {
             }
         }
 
-        // Add blank line before footer for research tool (its output is a full report)
-        if let Some(tool_name) = self.current_tool_name.lock().unwrap().as_ref() {
-            if tool_name == "research" {
-                println!();
-            }
-        }
-        
         // Check if we're in shell compact mode - append timing to the output line
         let is_shell = *self.is_shell_compact.lock().unwrap();
         if is_shell {

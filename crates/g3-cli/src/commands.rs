@@ -1,6 +1,6 @@
 //! Interactive command handlers for G3 CLI.
 //!
-//! Handles `/` commands in interactive mode (help, compact, research, etc.).
+//! Handles `/` commands in interactive mode (help, compact, etc.).
 
 use anyhow::Result;
 use rustyline::Editor;
@@ -25,33 +25,6 @@ pub enum CommandResult {
     EnterPlanMode,
 }
 
-// --- Research command helpers ---
-
-fn format_research_task_summary(task: &g3_core::pending_research::ResearchTask) -> String {
-    let status_emoji = match task.status {
-        g3_core::pending_research::ResearchStatus::Pending => "🔄",
-        g3_core::pending_research::ResearchStatus::Complete => "✅",
-        g3_core::pending_research::ResearchStatus::Failed => "❌",
-    };
-    let injected = if task.injected { " (injected)" } else { "" };
-    let query_preview = if task.query.len() > 60 {
-        format!("{}...", task.query.chars().take(57).collect::<String>())
-    } else {
-        task.query.clone()
-    };
-    format!(
-        "  {} `{}` - {} ({}){}\n     Query: {}",
-        status_emoji, task.id, task.status, task.elapsed_display(), injected, query_preview
-    )
-}
-
-fn format_research_report_header(task: &g3_core::pending_research::ResearchTask) -> String {
-    format!(
-        "📋 Research Report: `{}`\n\nQuery: {}\n\nStatus: {} | Elapsed: {}\n\n{}",
-        task.id, task.query, task.status, task.elapsed_display(), "─".repeat(60)
-    )
-}
-
 /// Handle a control command. Returns true if the command was handled and the loop should continue.
 pub async fn handle_command<W: UiWriter>(
     input: &str,
@@ -74,9 +47,6 @@ pub async fn handle_command<W: UiWriter>(
             output.print("  /fragments - List dehydrated context fragments (ACD)");
             output.print("  /rehydrate - Restore a dehydrated fragment by ID");
             output.print("  /resume    - List and switch to a previous session");
-            output.print("  /research  - List pending/completed research tasks");
-            output.print("  /research <id> - View a specific research report");
-            output.print("  /research latest - View the most recent research report");
             output.print("  /project <path> - Load a project from the given absolute path");
             output.print("  /unproject - Unload the current project and reset context");
             output.print("  /dump      - Dump entire context window to file for debugging");
@@ -166,56 +136,6 @@ pub async fn handle_command<W: UiWriter>(
                     }
                 } else {
                     output.print("No active session - fragments are session-scoped.");
-                }
-            }
-            Ok(CommandResult::Handled)
-        }
-        cmd if cmd == "/research" || cmd.starts_with("/research ") => {
-            let manager = agent.get_pending_research_manager();
-            let arg = cmd.strip_prefix("/research").unwrap_or("").trim();
-            
-            if arg.is_empty() {
-                let all_tasks = manager.list_all();
-                if all_tasks.is_empty() {
-                    output.print("📋 No research tasks (pending or completed).");
-                } else {
-                    output.print(&format!("📋 Research Tasks ({} total):\n", all_tasks.len()));
-                    for task in all_tasks {
-                        output.print(&format_research_task_summary(&task));
-                        output.print("");
-                    }
-                }
-            } else if arg == "latest" {
-                let all_tasks = manager.list_all();
-                let latest = all_tasks.iter()
-                    .filter(|t| t.status != g3_core::pending_research::ResearchStatus::Pending)
-                    .min_by_key(|t| t.started_at.elapsed());
-                
-                match latest {
-                    Some(task) => {
-                        output.print(&format_research_report_header(task));
-                        output.print(task.result.as_deref().unwrap_or("(No report content available)"));
-                    }
-                    None => {
-                        output.print("📋 No completed research tasks yet.");
-                    }
-                }
-            } else {
-                match manager.get(&arg.to_string()) {
-                    Some(task) => {
-                        output.print(&format_research_report_header(&task));
-                        let content = if let Some(ref result) = task.result {
-                            result.as_str()
-                        } else if task.status == g3_core::pending_research::ResearchStatus::Pending {
-                            "(Research still in progress...)"
-                        } else {
-                            "(No report content available)"
-                        };
-                        output.print(content);
-                    }
-                    None => {
-                        output.print(&format!("❓ No research task found with id: `{}`", arg));
-                    }
                 }
             }
             Ok(CommandResult::Handled)

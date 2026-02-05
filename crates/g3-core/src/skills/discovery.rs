@@ -1,15 +1,17 @@
 //! Skill discovery - scans directories for SKILL.md files.
 //!
-//! Discovers skills from:
-//! - Global: ~/.g3/skills/
-//! - Workspace: .g3/skills/
-//!
-//! Workspace skills override global skills with the same name.
+//! Discovers skills from (highest to lowest priority):
+//! 1. Repo: `skills/` at repo root (checked into git, overrides all)
+//! 2. Workspace: `.g3/skills/` (local customizations)
+//! 3. Extra paths from config
+//! 4. Global: `~/.g3/skills/`
+//! 5. Embedded: compiled into binary (always available)
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tracing::{debug, warn};
 
+use super::embedded::get_embedded_skills;
 use super::parser::Skill;
 
 /// Default global skills directory
@@ -18,28 +20,36 @@ const GLOBAL_SKILLS_DIR: &str = "~/.g3/skills";
 /// Default workspace skills directory (relative to workspace root)
 const WORKSPACE_SKILLS_DIR: &str = ".g3/skills";
 
+/// Repo-local skills directory (relative to workspace root, checked into git)
+const REPO_SKILLS_DIR: &str = "skills";
+
 /// Discover all available skills from configured paths.
 ///
-/// Skills are loaded from:
-/// 1. Global directory (~/.g3/skills/)
-/// 2. Workspace directory (.g3/skills/)
+/// Skills are loaded in priority order (lowest to highest):
+/// 1. Embedded skills (compiled into binary)
+/// 2. Global directory (~/.g3/skills/)
+/// 3. Extra paths from config
+/// 4. Workspace directory (.g3/skills/)
+/// 5. Repo directory (skills/) - highest priority
 ///
-/// Workspace skills override global skills with the same name.
-/// Additional paths can be provided via `extra_paths`.
+/// Higher priority skills override lower priority skills with the same name.
 pub fn discover_skills(
     workspace_dir: Option<&Path>,
     extra_paths: &[PathBuf],
 ) -> Vec<Skill> {
     let mut skills_by_name: HashMap<String, Skill> = HashMap::new();
     
-    // 1. Load global skills first (lowest priority)
+    // 1. Load embedded skills first (lowest priority)
+    load_embedded_skills(&mut skills_by_name);
+    
+    // 2. Load global skills
     let global_dir = expand_tilde(GLOBAL_SKILLS_DIR);
     if global_dir.exists() {
         debug!("Scanning global skills directory: {}", global_dir.display());
         load_skills_from_dir(&global_dir, &mut skills_by_name);
     }
     
-    // 2. Load from extra paths (medium priority)
+    // 3. Load from extra paths
     for path in extra_paths {
         let expanded = if path.starts_with("~") {
             expand_tilde(&path.to_string_lossy())
@@ -52,12 +62,21 @@ pub fn discover_skills(
         }
     }
     
-    // 3. Load workspace skills last (highest priority - overrides others)
+    // 4. Load workspace skills (.g3/skills/)
     if let Some(workspace) = workspace_dir {
         let workspace_skills = workspace.join(WORKSPACE_SKILLS_DIR);
         if workspace_skills.exists() {
             debug!("Scanning workspace skills directory: {}", workspace_skills.display());
             load_skills_from_dir(&workspace_skills, &mut skills_by_name);
+        }
+    }
+    
+    // 5. Load repo skills (skills/) - highest priority
+    if let Some(workspace) = workspace_dir {
+        let repo_skills = workspace.join(REPO_SKILLS_DIR);
+        if repo_skills.exists() {
+            debug!("Scanning repo skills directory: {}", repo_skills.display());
+            load_skills_from_dir(&repo_skills, &mut skills_by_name);
         }
     }
     
@@ -67,6 +86,23 @@ pub fn discover_skills(
     
     debug!("Discovered {} skills", skills.len());
     skills
+}
+
+/// Load embedded skills into the map.
+fn load_embedded_skills(skills: &mut HashMap<String, Skill>) {
+    for embedded in get_embedded_skills() {
+        match Skill::parse(embedded.skill_md, Path::new("<embedded>")) {
+            Ok(mut skill) => {
+                // Mark as embedded in the path
+                skill.path = format!("<embedded:{}>/{}", embedded.name, "SKILL.md");
+                debug!("Loaded embedded skill: {}", skill.name);
+                skills.insert(skill.name.clone(), skill);
+            }
+            Err(e) => {
+                warn!("Failed to parse embedded skill '{}': {}", embedded.name, e);
+            }
+        }
+    }
 }
 
 /// Load skills from a directory into the map.
@@ -125,6 +161,11 @@ fn expand_tilde(path: &str) -> PathBuf {
     PathBuf::from(expanded.as_ref())
 }
 
+/// Check if a skill is from an embedded source.
+pub fn is_embedded_skill(skill: &Skill) -> bool {
+    skill.path.starts_with("<embedded:")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,6 +186,16 @@ mod tests {
     }
     
     #[test]
+    fn test_discover_embedded_skills() {
+        // With no directories, should still find embedded skills
+        let skills = discover_skills(None, &[]);
+        
+        // Should have at least the research skill
+        assert!(!skills.is_empty(), "Should have embedded skills");
+        assert!(skills.iter().any(|s| s.name == "research"), "Should have research skill");
+    }
+    
+    #[test]
     fn test_discover_from_workspace() {
         let temp = TempDir::new().unwrap();
         let workspace = temp.path();
@@ -158,9 +209,66 @@ mod tests {
         
         let skills = discover_skills(Some(workspace), &[]);
         
-        assert_eq!(skills.len(), 2);
-        assert_eq!(skills[0].name, "another-skill"); // Sorted alphabetically
-        assert_eq!(skills[1].name, "test-skill");
+        // Should have embedded + workspace skills
+        assert!(skills.iter().any(|s| s.name == "test-skill"));
+        assert!(skills.iter().any(|s| s.name == "another-skill"));
+        assert!(skills.iter().any(|s| s.name == "research")); // embedded
+    }
+    
+    #[test]
+    fn test_discover_from_repo_skills() {
+        let temp = TempDir::new().unwrap();
+        let workspace = temp.path();
+        
+        // Create repo skills directory (skills/)
+        let skills_dir = workspace.join("skills");
+        fs::create_dir_all(&skills_dir).unwrap();
+        
+        create_skill_dir(&skills_dir, "repo-skill", "A repo skill");
+        
+        let skills = discover_skills(Some(workspace), &[]);
+        
+        assert!(skills.iter().any(|s| s.name == "repo-skill"));
+    }
+    
+    #[test]
+    fn test_repo_overrides_embedded() {
+        let temp = TempDir::new().unwrap();
+        let workspace = temp.path();
+        
+        // Create repo skills directory with a skill that overrides embedded
+        let skills_dir = workspace.join("skills");
+        fs::create_dir_all(&skills_dir).unwrap();
+        
+        // Override the embedded research skill
+        create_skill_dir(&skills_dir, "research", "Custom research skill");
+        
+        let skills = discover_skills(Some(workspace), &[]);
+        
+        let research = skills.iter().find(|s| s.name == "research").unwrap();
+        assert_eq!(research.description, "Custom research skill");
+        assert!(!is_embedded_skill(research), "Should not be marked as embedded");
+    }
+    
+    #[test]
+    fn test_repo_overrides_workspace() {
+        let temp = TempDir::new().unwrap();
+        let workspace = temp.path();
+        
+        // Create workspace skill
+        let workspace_skills = workspace.join(".g3/skills");
+        fs::create_dir_all(&workspace_skills).unwrap();
+        create_skill_dir(&workspace_skills, "shared-skill", "Workspace version");
+        
+        // Create repo skill with same name (should override)
+        let repo_skills = workspace.join("skills");
+        fs::create_dir_all(&repo_skills).unwrap();
+        create_skill_dir(&repo_skills, "shared-skill", "Repo version");
+        
+        let skills = discover_skills(Some(workspace), &[]);
+        
+        let shared = skills.iter().find(|s| s.name == "shared-skill").unwrap();
+        assert_eq!(shared.description, "Repo version");
     }
     
     #[test]
@@ -173,8 +281,7 @@ mod tests {
         
         let skills = discover_skills(None, &[extra_dir]);
         
-        assert_eq!(skills.len(), 1);
-        assert_eq!(skills[0].name, "extra-skill");
+        assert!(skills.iter().any(|s| s.name == "extra-skill"));
     }
     
     #[test]
@@ -194,15 +301,15 @@ mod tests {
         
         let skills = discover_skills(Some(workspace), &[extra_dir]);
         
-        assert_eq!(skills.len(), 1);
-        assert_eq!(skills[0].name, "shared-skill");
-        assert_eq!(skills[0].description, "Workspace version");
+        let shared = skills.iter().find(|s| s.name == "shared-skill").unwrap();
+        assert_eq!(shared.description, "Workspace version");
     }
     
     #[test]
     fn test_nonexistent_directory() {
         let skills = discover_skills(Some(Path::new("/nonexistent/path")), &[]);
-        assert!(skills.is_empty());
+        // Should still have embedded skills
+        assert!(!skills.is_empty());
     }
     
     #[test]
@@ -212,7 +319,8 @@ mod tests {
         fs::create_dir_all(&skills_dir).unwrap();
         
         let skills = discover_skills(Some(temp.path()), &[]);
-        assert!(skills.is_empty());
+        // Should still have embedded skills
+        assert!(!skills.is_empty());
     }
     
     #[test]
@@ -234,9 +342,9 @@ mod tests {
         
         let skills = discover_skills(Some(temp.path()), &[]);
         
-        // Only valid skill should be loaded
-        assert_eq!(skills.len(), 1);
-        assert_eq!(skills[0].name, "valid-skill");
+        // Valid skill should be loaded, invalid should be skipped
+        assert!(skills.iter().any(|s| s.name == "valid-skill"));
+        assert!(!skills.iter().any(|s| s.name == "invalid-skill"));
     }
     
     #[test]
@@ -254,8 +362,7 @@ mod tests {
         
         let skills = discover_skills(Some(temp.path()), &[]);
         
-        assert_eq!(skills.len(), 1);
-        assert_eq!(skills[0].name, "lowercase-skill");
+        assert!(skills.iter().any(|s| s.name == "lowercase-skill"));
     }
     
     #[test]
@@ -265,5 +372,12 @@ mod tests {
         
         let no_tilde = expand_tilde("/absolute/path");
         assert_eq!(no_tilde, PathBuf::from("/absolute/path"));
+    }
+    
+    #[test]
+    fn test_is_embedded_skill() {
+        let skills = discover_skills(None, &[]);
+        let research = skills.iter().find(|s| s.name == "research").unwrap();
+        assert!(is_embedded_skill(research));
     }
 }

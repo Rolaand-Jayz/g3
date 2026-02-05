@@ -6,10 +6,7 @@ use rustyline::error::ReadlineError;
 use rustyline::{Config, Editor};
 use crate::completion::G3Helper;
 use std::path::Path;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::{debug, error};
-use tokio::sync::broadcast;
 
 use g3_core::ui_writer::UiWriter;
 use g3_core::Agent;
@@ -134,56 +131,6 @@ async fn execute_user_input<W: UiWriter>(
     }
 }
 
-/// Spawn a background task to handle research completion notifications.
-///
-/// This task listens for research completions and prints status messages in real-time.
-/// When g3 is idle (waiting for input), it reprints the prompt after the notification.
-/// When g3 is busy (processing), it just prints the notification (interleaving is fine).
-///
-/// Returns a handle to the spawned task and an `is_busy` flag that should be set
-/// to true while the agent is processing and false when waiting for input.
-fn spawn_research_notification_handler(
-    mut rx: broadcast::Receiver<g3_core::ResearchCompletionNotification>,
-    is_busy: Arc<AtomicBool>,
-    prompt: Arc<std::sync::RwLock<String>>,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        loop {
-            match rx.recv().await {
-                Ok(notification) => {
-                    use std::io::Write;
-                    
-                    let succeeded = notification.status == g3_core::ResearchStatus::Complete;
-                    
-                    // Print the completion notification
-                    // If we're idle (at prompt), we need to print on a new line first
-                    let busy = is_busy.load(Ordering::SeqCst);
-                    if !busy {
-                        // Clear the current line (prompt) and move to start
-                        print!("\r\x1b[K");
-                    }
-                    
-                    G3Status::research_complete(1, succeeded);
-                    
-                    // If we're idle, reprint the prompt
-                    if !busy {
-                        let prompt_str = prompt.read().unwrap().clone();
-                        print!("{}", prompt_str);
-                        let _ = std::io::stdout().flush();
-                    }
-                }
-                Err(broadcast::error::RecvError::Closed) => {
-                    // Channel closed, exit the task
-                    break;
-                }
-                Err(broadcast::error::RecvError::Lagged(_)) => {
-                    // Missed some messages, continue
-                    continue;
-                }
-            }
-        }
-    })
-}
 
 /// Run interactive mode with console output.
 /// If `agent_name` is Some, we're in agent+chat mode: skip session resume/verbose welcome,
@@ -264,16 +211,6 @@ pub async fn run_interactive<W: UiWriter>(
         let _ = rl.load_history(history_path);
     }
 
-    // Enable research completion notifications for real-time updates
-    let research_rx = agent.enable_research_notifications();
-    let is_busy = Arc::new(AtomicBool::new(false));
-    let current_prompt = Arc::new(std::sync::RwLock::new(String::new()));
-    let _notification_handle = spawn_research_notification_handler(
-        research_rx,
-        is_busy.clone(),
-        current_prompt.clone(),
-    );
-
     // Track multiline input
     let mut multiline_buffer = String::new();
     let mut in_multiline = false;
@@ -299,20 +236,8 @@ pub async fn run_interactive<W: UiWriter>(
         // Display context window progress bar before each prompt
         display_context_progress(&agent, &output);
 
-        // Check for completed research and inject into context
-        // This happens before prompting the user for input
-        let injected_count = agent.inject_completed_research();
-        if injected_count > 0 {
-            println!("📋 {} research result(s) ready - injected into context", injected_count);
-            println!();
-        }
-
         // Build prompt
         let prompt = build_prompt(in_multiline, in_plan_mode, agent_name, &active_project);
-        
-        // Update the shared prompt for the notification handler
-        *current_prompt.write().unwrap() = prompt.clone();
-        is_busy.store(false, Ordering::SeqCst);
 
         let readline = rl.readline(&prompt);
         match readline {
@@ -350,11 +275,9 @@ pub async fn run_interactive<W: UiWriter>(
                     // Reprint input with formatting
                     reprint_formatted_input(&input, &prompt);
 
-                    is_busy.store(true, Ordering::SeqCst);
                     execute_user_input(
                         &mut agent, &input, show_prompt, show_code, &output, from_agent_mode
                     ).await;
-                    is_busy.store(false, Ordering::SeqCst);
                 } else {
                     // Single line input
                     let input = line.trim().to_string();
@@ -367,9 +290,7 @@ pub async fn run_interactive<W: UiWriter>(
                         // Reprint input with formatting
                         reprint_formatted_input(&input, &prompt);
                         
-                        is_busy.store(true, Ordering::SeqCst);
                         let (approved, result) = execute_plan_approve_directly(&mut agent, &output).await;
-                        is_busy.store(false, Ordering::SeqCst);
                         
                         if approved {
                             // Exit plan mode on successful approval
@@ -398,9 +319,7 @@ pub async fn run_interactive<W: UiWriter>(
 
                     // Check for control commands
                     if input.starts_with('/') {
-                        is_busy.store(true, Ordering::SeqCst);
                         let result = handle_command(&input, &mut agent, workspace_path, &output, &mut active_project, &mut rl, show_prompt, show_code).await?;
-                        is_busy.store(false, Ordering::SeqCst);
                         
                         match result {
                             CommandResult::Handled => {
@@ -417,11 +336,9 @@ pub async fn run_interactive<W: UiWriter>(
                     // Reprint input with formatting
                     reprint_formatted_input(&input, &prompt);
 
-                    is_busy.store(true, Ordering::SeqCst);
                     execute_user_input(
                         &mut agent, &input, show_prompt, show_code, &output, from_agent_mode
                     ).await;
-                    is_busy.store(false, Ordering::SeqCst);
                 }
             }
             Err(ReadlineError::Interrupted) => {

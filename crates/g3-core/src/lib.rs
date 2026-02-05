@@ -6,7 +6,6 @@ pub mod context_window;
 pub mod error_handling;
 pub mod feedback_extraction;
 pub mod paths;
-pub mod pending_research;
 pub mod project;
 pub mod provider_config;
 pub mod provider_registration;
@@ -38,9 +37,6 @@ pub use task_result::TaskResult;
 
 // Re-export context window types
 pub use context_window::{ContextWindow, ThinResult, ThinScope};
-
-// Re-export pending research types for notification handling
-pub use pending_research::{PendingResearchManager, ResearchCompletionNotification, ResearchStatus};
 
 // Export agent prompt generation for CLI use
 pub use prompts::{
@@ -164,8 +160,6 @@ pub struct Agent<W: UiWriter> {
     acd_enabled: bool,
     /// Whether plan mode is active (gate blocks file changes without approved plan)
     in_plan_mode: bool,
-    /// Manager for async research tasks
-    pending_research_manager: pending_research::PendingResearchManager,
 }
 
 impl<W: UiWriter> Agent<W> {
@@ -220,7 +214,6 @@ impl<W: UiWriter> Agent<W> {
             auto_memory: false,
             acd_enabled: false,
             in_plan_mode: false,
-            pending_research_manager: pending_research::PendingResearchManager::new(),
         }
     }
 
@@ -951,16 +944,11 @@ impl<W: UiWriter> Agent<W> {
         let provider_name = provider.name().to_string();
         let _has_native_tool_calling = provider.has_native_tool_calling();
         let _supports_cache_control = provider.supports_cache_control();
-        // Check if we should exclude the research tool (scout agent to prevent recursion)
-        let exclude_research = self.agent_name.as_deref() == Some("scout");
         let tools = if provider.has_native_tool_calling() {
-            let mut tool_config = tool_definitions::ToolConfig::new(
+            let tool_config = tool_definitions::ToolConfig::new(
                 self.config.webdriver.enabled,
                 self.config.computer_control.enabled,
             );
-            if exclude_research {
-                tool_config = tool_config.with_research_excluded();
-            }
             Some(tool_definitions::create_tool_definitions(tool_config))
         } else {
             None
@@ -1097,51 +1085,6 @@ impl<W: UiWriter> Agent<W> {
     /// Used for injecting discovery messages before the first LLM turn.
     pub fn add_message_to_context(&mut self, message: Message) {
         self.context_window.add_message(message);
-    }
-
-    /// Check for completed research tasks and inject them into the context.
-    ///
-    /// This should be called at natural break points:
-    /// - End of each tool iteration (before next LLM call)
-    /// - Before prompting user in interactive mode
-    ///
-    /// Returns the number of research results injected.
-    pub fn inject_completed_research(&mut self) -> usize {
-        let completed = self.pending_research_manager.take_completed();
-        
-        if completed.is_empty() {
-            return 0;
-        }
-        
-        for task in &completed {
-            let message_content = match task.status {
-                pending_research::ResearchStatus::Complete => {
-                    format!(
-                        "📋 **Research completed** (id: `{}`): {}\n\n{}",
-                        task.id,
-                        task.query,
-                        task.result.as_deref().unwrap_or("No result available")
-                    )
-                }
-                pending_research::ResearchStatus::Failed => {
-                    format!(
-                        "❌ **Research failed** (id: `{}`): {}\n\nError: {}",
-                        task.id,
-                        task.query,
-                        task.result.as_deref().unwrap_or("Unknown error")
-                    )
-                }
-                pending_research::ResearchStatus::Pending => continue, // Skip pending tasks
-            };
-            
-            // Inject as a user message so the agent sees and responds to it
-            let message = Message::new(MessageRole::User, message_content);
-            self.context_window.add_message(message);
-            
-            debug!("Injected research result for task {}", task.id);
-        }
-        
-        completed.len()
     }
 
     /// Execute a tool call and return the result.
@@ -1502,30 +1445,6 @@ impl<W: UiWriter> Agent<W> {
 
     pub fn get_config(&self) -> &Config {
         &self.config
-    }
-
-    pub fn get_pending_research_manager(&self) -> &pending_research::PendingResearchManager {
-        &self.pending_research_manager
-    }
-
-    /// Subscribe to research completion notifications.
-    ///
-    /// Returns a receiver that will receive notifications when research tasks complete.
-    /// Returns None if the agent was not configured with notifications enabled.
-    /// Use this in interactive mode to get real-time updates when research finishes.
-    pub fn subscribe_research_notifications(&self) -> Option<tokio::sync::broadcast::Receiver<pending_research::ResearchCompletionNotification>> {
-        self.pending_research_manager.subscribe()
-    }
-
-    /// Enable research completion notifications and return a receiver.
-    ///
-    /// This replaces the internal research manager with one that sends notifications.
-    /// Call this once during setup (e.g., in interactive mode) before any research tasks.
-    /// Returns a receiver that will receive notifications when research tasks complete.
-    pub fn enable_research_notifications(&mut self) -> tokio::sync::broadcast::Receiver<pending_research::ResearchCompletionNotification> {
-        let (manager, rx) = pending_research::PendingResearchManager::with_notifications();
-        self.pending_research_manager = manager;
-        rx
     }
 
     pub fn set_requirements_sha(&mut self, sha: String) {
@@ -2150,14 +2069,6 @@ Skip if nothing new. Be brief."#;
                 tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
             }
 
-            // Check for completed research and inject into context
-            // This happens at the start of each iteration, before the LLM call
-            let injected_count = self.inject_completed_research();
-            if injected_count > 0 {
-                debug!("Injected {} completed research result(s) into context", injected_count);
-                self.ui_writer.println(&format!("📋 {} research result(s) ready and injected into context", injected_count));
-            }
-
             // Get provider info for logging, then drop it to avoid borrow issues
             let (provider_name, provider_model) = {
                 let provider = self.providers.get(None)?;
@@ -2564,14 +2475,10 @@ Skip if nothing new. Be brief."#;
                             // Ensure tools are included for native providers in subsequent iterations
                             let provider_for_tools = self.providers.get(None)?;
                             if provider_for_tools.has_native_tool_calling() {
-                                let mut tool_config = tool_definitions::ToolConfig::new(
+                                let tool_config = tool_definitions::ToolConfig::new(
                                     self.config.webdriver.enabled,
                                     self.config.computer_control.enabled,
                                 );
-                                // Exclude research tool for scout agent to prevent recursion
-                                if self.agent_name.as_deref() == Some("scout") {
-                                    tool_config = tool_config.with_research_excluded();
-                                }
                                 request.tools =
                                     Some(tool_definitions::create_tool_definitions(tool_config));
                             }
@@ -2980,7 +2887,6 @@ Skip if nothing new. Be brief."#;
             requirements_sha: self.requirements_sha.as_deref(),
             context_total_tokens: self.context_window.total_tokens,
             context_used_tokens: self.context_window.used_tokens,
-            pending_research_manager: &self.pending_research_manager,
         };
 
         // Dispatch to the appropriate tool handler

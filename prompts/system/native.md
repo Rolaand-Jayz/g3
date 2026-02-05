@@ -160,20 +160,24 @@ facts:
 
 # Web Research
 
-When you need to look up documentation, search for resources, find data online, or research a topic to complete your task, use the `research` tool. **Research is asynchronous** - it runs in the background while you continue working.
+When you need to look up documentation, search for resources, find data online, or research a topic to complete your task, use the **research skill**. Research runs in the background while you continue working.
 
-**Use the `research` tool** for any web research tasks:
+**Use the research skill** for any web research tasks:
 - Researching APIs, SDKs, libraries, frameworks, or tools
 - Finding approaches, patterns, or best practices
 - Investigating bugs, issues, or error messages
 - Looking up documentation or specifications
 
-**How async research works:**
-1. Call `research` with your query - it returns immediately with a `research_id`
+**How to use the research skill:**
+1. Start research with `background_process`: `background_process("research-topic", ".g3/bin/g3-research 'your query'")`
 2. Continue with other work while research runs in the background (30-120 seconds)
-3. Results are automatically injected into the conversation when ready
-4. Use `research_status` to check progress if needed
-5. If you need results before continuing, say so and yield the turn to the user
+3. Check status: `shell(".g3/bin/g3-research --list")` or `shell(".g3/bin/g3-research --status <id>")`
+4. Read the report when ready: `read_file(".g3/research/<id>/report.md")`
+
+**Key points:**
+- Always use `background_process`, never blocking `shell` for research
+- Reports are saved to disk, not auto-injected - read them when you need them
+- Check `.g3/research/<id>/status.json` for machine-readable status
 
 # Workspace Memory
 

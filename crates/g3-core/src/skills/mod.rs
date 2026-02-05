@@ -22,10 +22,12 @@
 //!
 //! # Discovery
 //!
-//! Skills are discovered from:
-//! 1. Global: `~/.g3/skills/` (lowest priority)
-//! 2. Extra paths from config (medium priority)
-//! 3. Workspace: `.g3/skills/` (highest priority, overrides others)
+//! Skills are discovered from (highest to lowest priority):
+//! 1. Repo: `skills/` at repo root (checked into git, overrides all)
+//! 2. Workspace: `.g3/skills/` (local customizations)
+//! 3. Extra paths from config
+//! 4. Global: `~/.g3/skills/`
+//! 5. Embedded: compiled into binary (always available)
 //!
 //! # Usage
 //!
@@ -36,7 +38,10 @@
 mod parser;
 mod discovery;
 mod prompt;
+mod embedded;
+pub mod extraction;
 
 pub use parser::Skill;
 pub use discovery::discover_skills;
 pub use prompt::generate_skills_prompt;
+pub use embedded::{get_embedded_skills, get_embedded_skill, EmbeddedSkill};
