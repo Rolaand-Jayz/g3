@@ -664,10 +664,36 @@ fn cmd_sdlc_run(commits_per_run: u32, from_commit: Option<String>) -> Result<()>
         sdlc::display_pipeline(&state);
     }
     
-    // Cleanup worktree
-    worktree.remove(&sdlc_session)?;
-    sdlc_session.delete(&repo_root)?;
-    
+    // Handle completion: merge if successful, otherwise preserve for debugging
+    if state.is_complete() {
+        // Check if there are commits to merge
+        let branch_name = sdlc_session.branch_name();
+        if has_commits_on_branch(&worktree_path, &branch_name)? {
+            // Merge to main before cleanup
+            print!("\x1b[1;32msdlc:\x1b[0m merging changes to main ... ");
+            std::io::Write::flush(&mut std::io::stdout()).ok();
+
+            match worktree.merge_to_main(&branch_name) {
+                Ok(()) => {
+                    println!("[\x1b[1;32mmerged\x1b[0m]");
+                }
+                Err(e) => {
+                    println!("[\x1b[1;31mfailed\x1b[0m]");
+                    println!("\x1b[1;31msdlc:\x1b[0m merge failed: {}", e);
+                    println!("       Worktree preserved at: {}", worktree_path.display());
+                    println!("       Resolve conflicts manually, then run 'studio accept {}'", sdlc_session.id);
+                    state.save(&repo_root)?;
+                    return Ok(());
+                }
+            }
+        }
+
+        // Cleanup worktree after successful merge (or if no commits)
+        worktree.remove(&sdlc_session)?;
+        sdlc_session.delete(&repo_root)?;
+    }
+    // If not complete (failures), preserve worktree for debugging/retry
+
     // Generate and display summary
     if state.is_complete() {
         let summary = sdlc::generate_summary(&state);
@@ -682,6 +708,7 @@ fn cmd_sdlc_run(commits_per_run: u32, from_commit: Option<String>) -> Result<()>
         println!("\x1b[1;32msdlc:\x1b[0m pipeline complete!");
     } else if state.has_failures() {
         println!();
+        println!("\x1b[1;32msdlc:\x1b[0m worktree preserved at: {}", worktree_path.display());
         println!("\x1b[1;33msdlc:\x1b[0m pipeline paused due to failures");
         println!("       Run 'studio sdlc run' to retry failed stages");
     }

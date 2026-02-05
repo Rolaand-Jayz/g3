@@ -158,12 +158,12 @@ impl PipelineState {
 
     /// Get the path to the pipeline state file
     pub fn state_path(repo_root: &Path) -> PathBuf {
-        repo_root.join("analysis").join("sdlc").join("pipeline.json")
+        repo_root.join(".g3").join("sdlc").join("pipeline.json")
     }
 
     /// Get the path to the SDLC directory
     pub fn sdlc_dir(repo_root: &Path) -> PathBuf {
-        repo_root.join("analysis").join("sdlc")
+        repo_root.join(".g3").join("sdlc")
     }
 
     /// Load pipeline state from disk, or return None if not found
