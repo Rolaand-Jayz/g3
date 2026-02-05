@@ -143,6 +143,22 @@ async fn execute_user_input<W: UiWriter>(
     }
 }
 
+/// Check if plan is terminal and exit plan mode if so.
+///
+/// Returns true if plan mode was exited (plan is complete or all blocked).
+fn check_and_exit_plan_mode_if_terminal<W: UiWriter>(
+    agent: &mut Agent<W>,
+    in_plan_mode: &mut bool,
+    output: &SimpleOutput,
+) -> bool {
+    if *in_plan_mode && agent.is_plan_terminal() {
+        output.print("\n📋 Plan complete - exiting plan mode");
+        *in_plan_mode = false;
+        agent.set_plan_mode(false);
+        return true;
+    }
+    false
+}
 
 /// Run interactive mode with console output.
 /// If `agent_name` is Some, we're in agent+chat mode: skip session resume/verbose welcome,
@@ -298,6 +314,9 @@ pub async fn run_interactive<W: UiWriter>(
                     execute_user_input(
                         &mut agent, &final_input, show_prompt, show_code, &output, from_agent_mode
                     ).await;
+
+                    // Check if plan completed and exit plan mode if so
+                    check_and_exit_plan_mode_if_terminal(&mut agent, &mut in_plan_mode, &output);
                 } else {
                     // Single line input
                     let input = line.trim().to_string();
@@ -365,6 +384,9 @@ pub async fn run_interactive<W: UiWriter>(
                     execute_user_input(
                         &mut agent, &final_input, show_prompt, show_code, &output, from_agent_mode
                     ).await;
+
+                    // Check if plan completed and exit plan mode if so
+                    check_and_exit_plan_mode_if_terminal(&mut agent, &mut in_plan_mode, &output);
                 }
             }
             Err(ReadlineError::Interrupted) => {

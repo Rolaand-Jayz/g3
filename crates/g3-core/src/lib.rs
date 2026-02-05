@@ -50,7 +50,7 @@ pub use skills::{Skill, discover_skills, generate_skills_prompt};
 #[cfg(test)]
 mod task_result_comprehensive_tests;
 use crate::ui_writer::UiWriter;
-use tools::plan::{check_plan_approval_gate, ApprovalGateResult};
+use tools::plan::{check_plan_approval_gate, read_plan, ApprovalGateResult};
 
 #[cfg(test)]
 mod tilde_expansion_tests;
@@ -1546,6 +1546,22 @@ impl<W: UiWriter> Agent<W> {
     /// Check if plan mode is active
     pub fn is_plan_mode(&self) -> bool {
         self.in_plan_mode
+    }
+
+    /// Check if the current plan is in a terminal state (all items done or blocked).
+    ///
+    /// Returns true if:
+    /// - A plan exists AND all items are in terminal state (done or blocked)
+    ///
+    /// Returns false if:
+    /// - No session_id is set
+    /// - No plan exists for the session
+    /// - Plan has items that are not terminal (todo or doing)
+    pub fn is_plan_terminal(&self) -> bool {
+        let Some(session_id) = &self.session_id else {
+            return false;
+        };
+        read_plan(session_id).ok().flatten().map_or(false, |plan| plan.is_complete())
     }
 
     // =========================================================================
