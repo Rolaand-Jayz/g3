@@ -726,15 +726,22 @@ impl UiWriter for ConsoleUiWriter {
                     description: String,
                     state: String,
                     touches: Vec<String>,
-                    checks: ChecksCompact,
+                    #[serde(default)]
+                    checks: Option<ChecksCompact>,
+                    #[serde(default)]
+                    evidence: Vec<String>,
+                    #[serde(default)]
+                    notes: Option<String>,
                 }
                 #[derive(serde::Deserialize)]
                 struct ChecksCompact {
                     happy: CheckCompact,
-                    negative: CheckCompact,
-                    boundary: CheckCompact,
+                    #[serde(default)]
+                    negative: Vec<CheckCompact>,
+                    #[serde(default)]
+                    boundary: Vec<CheckCompact>,
                 }
-                #[derive(serde::Deserialize)]
+                #[derive(serde::Deserialize, Clone)]
                 struct CheckCompact {
                     desc: String,
                     #[allow(dead_code)]
@@ -742,23 +749,35 @@ impl UiWriter for ConsoleUiWriter {
                 }
 
                 if let Ok(plan) = serde_yaml::from_str::<PlanCompact>(yaml) {
-                    // Header with plan info
+                    // Count items by state for summary
+                    let done_count = plan.items.iter().filter(|i| i.state == "done").count();
+                    let doing_count = plan.items.iter().filter(|i| i.state == "doing").count();
+                    let blocked_count = plan.items.iter().filter(|i| i.state == "blocked").count();
+                    let todo_count = plan.items.iter().filter(|i| i.state == "todo").count();
+                    let total = plan.items.len();
+
+                    // Header with plan info and progress
                     let approved_str = if let Some(rev) = plan.approved_revision {
                         format!(" \x1b[32m✓ approved@{}\x1b[0m", rev)
                     } else {
                         " \x1b[33m⚠ NOT APPROVED\x1b[0m".to_string()
                     };
-                    println!(" \x1b[2m●\x1b[0m {}{:<width$}\x1b[0m \x1b[2m|\x1b[0m \x1b[36m{}\x1b[0m rev {}{}",
-                        tool_color, tool_name, plan.plan_id, plan.revision, approved_str, width = TOOL_NAME_PADDING);
+
+                    // Progress bar visualization
+                    let progress_bar = format!(
+                        "\x1b[32m{}\x1b[33m{}\x1b[31m{}\x1b[2m{}\x1b[0m",
+                        "■".repeat(done_count),
+                        "■".repeat(doing_count),
+                        "■".repeat(blocked_count),
+                        "□".repeat(todo_count)
+                    );
+
+                    println!(" \x1b[2m●\x1b[0m {}{:<width$}\x1b[0m \x1b[2m|\x1b[0m \x1b[1;36m{}\x1b[0m{} \x1b[2m[{}/{}]\x1b[0m {}",
+                        tool_color, tool_name, plan.plan_id, approved_str, done_count, total, progress_bar, width = TOOL_NAME_PADDING);
 
                     let items_len = plan.items.len();
                     for (i, item) in plan.items.iter().enumerate() {
                         let is_last_item = i == items_len - 1;
-                        // All items use ├, sub-lines use │
-                        // Only the very last sub-line (boundary of last item) uses └
-                        let item_prefix = "├";
-                        let child_prefix = "│";
-                        let last_child_prefix = if is_last_item { "└" } else { "│" };
 
                         // State indicator: □ = todo, ◐ = doing, ■ = done, ⊘ = blocked
                         let (state_icon, state_color) = match item.state.as_str() {
@@ -769,25 +788,73 @@ impl UiWriter for ConsoleUiWriter {
                             _ => ("?", "\x1b[0m"),
                         };
 
-                        // Item line: state icon, ID, description
-                        let desc_style = if item.state == "done" { "\x1b[9m" } else { "" }; // strikethrough if done
-                        println!("   \x1b[2m{}\x1b[0m {}{} \x1b[1m{}\x1b[0m {}{}\x1b[0m",
-                            item_prefix, state_color, state_icon, item.id, desc_style, item.description);
+                        // Item line with tree structure
+                        let item_prefix = if is_last_item { "└" } else { "├" };
+                        let child_prefix = if is_last_item { " " } else { "│" };
 
-                        // Touches (dimmed)
-                        let touches_str = item.touches.join(", ");
-                        println!("   \x1b[2m{}    → {}\x1b[0m", child_prefix, touches_str);
+                        // Truncate description if too long
+                        let max_desc_len = 70;
+                        let desc_display = if item.description.chars().count() > max_desc_len {
+                            let truncate_at = item.description
+                                .char_indices()
+                                .nth(max_desc_len - 3)
+                                .map(|(i, _)| i)
+                                .unwrap_or(item.description.len());
+                            format!("{}...", &item.description[..truncate_at])
+                        } else {
+                            item.description.clone()
+                        };
 
-                        // Checks (dimmed, compact)
-                        println!("   \x1b[2m{}    ✓ happy: {}\x1b[0m", child_prefix, item.checks.happy.desc);
-                        println!("   \x1b[2m{}    ✗ negative: {}\x1b[0m", child_prefix, item.checks.negative.desc);
-                        println!("   \x1b[2m{}    ◇ boundary: {}\x1b[0m", last_child_prefix, item.checks.boundary.desc);
+                        // Item line: state icon, ID, description (strikethrough if done)
+                        let desc_style = if item.state == "done" { "\x1b[9m\x1b[2m" } else { "" };
+                        let desc_reset = if item.state == "done" { "\x1b[0m" } else { "" };
+                        println!("   \x1b[2m{}\x1b[0m {}{}\x1b[0m \x1b[1m{}\x1b[0m {}{}{}",
+                            item_prefix, state_color, state_icon, item.id, desc_style, desc_display, desc_reset);
+
+                        // For done items, show evidence compactly; for others show touches and checks
+                        if item.state == "done" {
+                            // Show evidence for done items
+                            if !item.evidence.is_empty() {
+                                let evidence_str = item.evidence.iter()
+                                    .map(|e| {
+                                        // Shorten long evidence paths
+                                        if e.len() > 40 {
+                                            let truncate_at = e.char_indices().nth(37).map(|(i, _)| i).unwrap_or(e.len());
+                                            format!("{}...", &e[..truncate_at])
+                                        } else {
+                                            e.clone()
+                                        }
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join(", ");
+                                println!("   \x1b[2m{}    📎 {}\x1b[0m", child_prefix, evidence_str);
+                            }
+                        } else {
+                            // Show touches for non-done items
+                            let touches_str = item.touches.join(", ");
+                            println!("   \x1b[2m{}    → {}\x1b[0m", child_prefix, touches_str);
+
+                            // Show checks if present (compact format)
+                            if let Some(ref checks) = item.checks {
+                                // Happy check (always single)
+                                println!("   \x1b[2m{}    \x1b[32m✓\x1b[0m\x1b[2m {}\x1b[0m", child_prefix, checks.happy.desc);
+
+                                // Negative checks (can be multiple)
+                                for neg in &checks.negative {
+                                    println!("   \x1b[2m{}    \x1b[31m✗\x1b[0m\x1b[2m {}\x1b[0m", child_prefix, neg.desc);
+                                }
+
+                                // Boundary checks (can be multiple)
+                                for bnd in &checks.boundary {
+                                    println!("   \x1b[2m{}    \x1b[33m◇\x1b[0m\x1b[2m {}\x1b[0m", child_prefix, bnd.desc);
+                                }
+                            }
+                        }
                     }
 
                     // File path link at the end
                     if let Some(path) = plan_file_path {
-                        println!();  // Blank line gap
-                        println!(" \x1b[2m-> {}\x1b[0m", path);
+                        println!("   \x1b[2m📄 {}\x1b[0m", path);
                     }
 
                     // Add blank line after content for readability
