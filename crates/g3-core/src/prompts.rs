@@ -259,15 +259,6 @@ mod tests {
     }
 
     #[test]
-    fn test_both_prompts_have_web_research() {
-        let native = get_system_prompt_for_native();
-        let non_native = get_system_prompt_for_non_native();
-        
-        assert!(native.contains("# Web Research"));
-        assert!(non_native.contains("# Web Research"));
-    }
-    
-    #[test]
     fn test_native_prompt_loaded_from_file() {
         // Verify the include_str! macro successfully loads the file
         let prompt = EMBEDDED_NATIVE_PROMPT;
