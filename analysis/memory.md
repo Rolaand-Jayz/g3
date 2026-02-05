@@ -1,5 +1,5 @@
 # Workspace Memory
-> Updated: 2026-02-05T03:06:55Z | Size: 23.5k chars
+> Updated: 2026-02-05T14:30:00Z | Size: ~19k chars
 
 ### Remember Tool Wiring
 - `crates/g3-core/src/tools/memory.rs` [0..5000] - `execute_remember()`, `get_memory_path()`, `merge_memory()`
@@ -115,7 +115,6 @@ Saves conversation fragments to disk, replaces with stubs.
 
 ### UTF-8 Safe String Slicing
 Rust `&s[..n]` panics on multi-byte chars (emoji, CJK) if sliced mid-character.
-
 **Pattern**: `s.char_indices().nth(n).map(|(i,_)| i).unwrap_or(s.len())`
 **Danger zones**: Display truncation, ACD stubs, user input, non-ASCII text.
 
@@ -143,7 +142,7 @@ Auto-detects languages and injects toolchain guidance.
   - `get_language_prompts_for_workspace()` [88..108]
   - `get_agent_language_prompts_for_workspace()` [124..137]
 - `crates/g3-cli/src/agent_mode.rs` [149..159] - appends agent-specific prompts
-- `prompts/langs/` - language prompt files (e.g., `racket.md`, `carmack.racket.md`)
+- `prompts/langs/` - language prompt files
 
 **To add language**: Create `prompts/langs/<lang>.md`, add to `LANGUAGE_PROMPTS`
 **To add agent+lang**: Create `prompts/langs/<agent>.<lang>.md`, add to `AGENT_LANGUAGE_PROMPTS`
@@ -165,7 +164,6 @@ Auto-detects languages and injects toolchain guidance.
   - `done()` [72] - bold green "[done]"
   - `failed()` [81] - red "[failed]"
   - `thin_result()` [236] - formats ThinResult with colors
-  - `resuming()` [213] - session resume with cyan ID
 
 ### Prompt Cache Statistics
 - `crates/g3-providers/src/lib.rs` [195..210] - `Usage.cache_creation_tokens`, `cache_read_tokens`
@@ -211,191 +209,35 @@ max_tokens = 4096
 gpu_layers = 99
 ```
 
-### Async Research Tool
-Research tool is asynchronous - spawns scout agent in background, returns immediately with research_id.
+### Agent Skills System
+Portable skill packages with SKILL.md + optional scripts per Agent Skills spec (agentskills.io).
 
-- `crates/g3-core/src/pending_research.rs`
-  - `PendingResearchManager` [80..100] - thread-safe task storage (Arc<Mutex<HashMap>>)
-  - `ResearchTask` [40..75] - id, query, status, result, started_at, injected
-  - `ResearchStatus` [20..35] - Pending, Complete, Failed enum
-  - `register()` [110..125] - creates task, returns research_id
-  - `complete()` / `fail()` [130..150] - update task status
-  - `take_completed()` [180..200] - returns completed tasks, marks as injected
-  - `list_all()` [165..170] - returns all tasks for /research command
-
-- `crates/g3-core/src/tools/research.rs`
-  - `execute_research()` [150..210] - spawns scout in tokio::spawn, returns placeholder
-  - `run_scout_agent()` [215..300] - async fn that runs in background task
-  - `execute_research_status()` [305..380] - check status of pending research
-
-- `crates/g3-core/src/lib.rs`
-  - `inject_completed_research()` [1080..1120] - injects completed research into context
-  - Called at start of each tool iteration and before user prompt in interactive mode
-
-- `crates/g3-cli/src/commands.rs`
-  - `/research` command [125..160] - lists all research tasks with status
-
-**Flow:**
-1. Agent calls `research(query)` → returns immediately with research_id
-2. Scout agent runs in background tokio task
-3. On completion, `PendingResearchManager.complete()` stores result
-4. At next iteration start or user prompt, `inject_completed_research()` adds to context
-5. Agent can check status with `research_status` tool or user with `/research` command
-
-### Plan Mode (replaces TODO system)
-Structured task planning with cognitive forcing - requires happy/negative/boundary checks.
-
-- `crates/g3-core/src/tools/plan.rs`
-  - `Plan` [200..240] - plan_id, revision, approved_revision, items[]
-  - `PlanItem` [110..145] - id, description, state, touches, checks, evidence, notes
-  - `PlanState` [25..45] - enum: Todo, Doing, Done, Blocked
-  - `Check` [60..85] - desc, target fields
-  - `Checks` [90..105] - happy, negative, boundary
-  - `get_plan_path()` [280..285] - returns `.g3/sessions/<id>/plan.g3.md`
-  - `read_plan()` [290..310] - loads plan from YAML in markdown
-  - `write_plan()` [315..335] - validates and saves plan
-  - `plan_verify()` [355..390] - placeholder called when all items done/blocked
-  - `execute_plan_read()` [395..420] - plan.read tool
-  - `execute_plan_write()` [425..490] - plan.write tool with validation
-  - `execute_plan_approve()` [495..530] - plan.approve tool
-
-- `crates/g3-core/src/tool_definitions.rs` [263..330] - plan.read, plan.write, plan.approve definitions
-- `crates/g3-core/src/tool_dispatch.rs` [36..38] - dispatch cases for plan tools
-- `crates/g3-cli/src/commands.rs` [460..490] - `/plan` command starts Plan Mode
-- `crates/g3-core/src/prompts.rs` [21..130] - SHARED_PLAN_SECTION replaces TODO section
-
-**Plan Schema (YAML)**:
-```yaml
-plan_id: feature-name
-revision: 1
-approved_revision: 1  # set by plan.approve
-items:
-  - id: I1
-    description: What to do
-    state: todo|doing|done|blocked
-    touches: [paths/modules]
-    checks:
-      happy: {desc, target}
-      negative: {desc, target}
-      boundary: {desc, target}
-    evidence: [file:line, test names]  # required when done
-    notes: Implementation explanation   # required when done
-```
-
-**Workflow**: `/plan <desc>` → agent drafts plan → user approves → agent implements → plan_verify() called when complete
-
-### Plan Mode Tool Names (IMPORTANT)
-Tool names must use underscores, not dots (Anthropic API restriction: `^[a-zA-Z0-9_-]{1,128}$`).
-
-- `plan_read` - Read current plan
-- `plan_write` - Create/update plan
-- `plan_approve` - Approve plan revision
-
-### Plan Verification System
-Verifies evidence in completed plan items deterministically.
-
-- `crates/g3-core/src/tools/plan.rs`
-  - `EvidenceType` [283..300] - enum: CodeLocation{file_path, start_line, end_line}, TestReference{file_path, test_name}, Unknown
-  - `VerificationStatus` [303..320] - enum: Verified, Warning(String), Error(String), Skipped(String)
-  - `EvidenceVerification` [330..345] - evidence string + parsed type + status
-  - `ItemVerification` [348..365] - item_id, description, evidence_results[], missing_evidence flag
-  - `PlanVerification` [368..385] - plan_id, item_results[], skipped_count; has all_passed(), count_issues()
-  - `parse_evidence()` [390..428] - parses evidence string into EvidenceType
-  - `parse_line_range()` [429..440] - parses "42" or "42-118" into (start, Option<end>)
-  - `verify_code_location()` [443..495] - checks file exists, line numbers in range
-  - `verify_test_reference()` [496..554] - checks test file exists, searches for fn test_name
-  - `verify_single_evidence()` [632..655] - dispatches to appropriate verifier
-  - `plan_verify()` [659..700] - iterates done items, collects verification results
-  - `format_verification_results()` [703..745] - formats results with emoji, loud warnings
-
-**Evidence formats supported:**
-- Code location with range: `src/foo.rs:42-118`
-- Code location single line: `src/foo.rs:42`
-- Code location file only: `src/foo.rs`
-- Test reference: `tests/foo.rs::test_bar`
-
-**Integration:** Called from `execute_plan_write()` when plan is complete and approved (line 828-833)
-
-### Invariants System (Rulespec & Action Envelope)
-Machine-readable invariants for Plan Mode verification.
-
-- `crates/g3-core/src/tools/invariants.rs`
-  - `InvariantSource` [25..40] - enum: TaskPrompt, Memory
-  - `Claim` [50..75] - name + selector for envelope paths
-  - `PredicateRule` [80..120] - enum: Contains, Equals, Exists, NotExists, GreaterThan, LessThan, MinLength, MaxLength, Matches
-  - `Predicate` [125..180] - claim ref, rule, value, source, notes
-  - `Rulespec` [185..240] - claims[] + predicates[]
-  - `ActionEnvelope` [245..290] - facts HashMap<String, YamlValue>
-  - `Selector` [295..410] - parse(), select() for XPath-like paths (foo.bar, foo[0], foo[*])
-  - `evaluate_predicate()` [415..630] - evaluates predicate against selected values
-  - `get_rulespec_path()` [635..640] - `.g3/sessions/<id>/rulespec.yaml`
-  - `get_envelope_path()` [642..647] - `.g3/sessions/<id>/envelope.yaml`
-  - `read_rulespec()`, `write_rulespec()` [650..680]
-  - `read_envelope()`, `write_envelope()` [682..710]
-  - `evaluate_rulespec()` [780..850] - full rulespec evaluation against envelope
-  - `format_evaluation_results()` [855..900] - pretty-print evaluation
-
-- `crates/g3-core/src/tools/plan.rs`
-  - `format_verification_results()` [702..762] - now prints rulespec/envelope paths
-
-- `crates/g3-core/src/prompts.rs` [92..156] - Invariants section in SHARED_PLAN_SECTION
-
-**Selector syntax**: `foo.bar` (nested), `foo[0]` (index), `foo[*]` (wildcard)
-**Predicate rules**: contains, equals, exists, not_exists, min_length, max_length, greater_than, less_than, matches
-
-### Studio SDLC Pipeline Command
-Orchestrates 7 g3 agents in sequence for codebase maintenance.
-
-- `crates/studio/src/sdlc.rs`
-  - `PIPELINE_STAGES` [28..62] - static array of 7 agents: euler, breaker, hopper, fowler, carmack, lamport, huffman
-  - `Stage` [18..26] - name, description, focus fields
-  - `StageStatus` [65..80] - enum: Pending, Running, Complete, Failed, Skipped
-  - `PipelineState` [108..140] - run_id, stages[], commit_cursor, session_id
-  - `PipelineState::load()` [165..185] - loads from analysis/sdlc/pipeline.json, handles corruption
-  - `PipelineState::save()` [188..200] - persists state for crash recovery
-  - `PipelineState::resume()` [330..340] - finds first incomplete stage, resets Running→Pending
-  - `display_pipeline()` [354..390] - box display with status icons (○/◉/✓/✗/⊘)
-  - `generate_summary()` [410..475] - markdown table of results
-
-- `crates/studio/src/main.rs`
-  - `SdlcAction` [88..104] - enum: Run{commits}, Status, Reset
-  - `cmd_sdlc_run()` [540..655] - orchestrates pipeline in worktree
-  - `cmd_sdlc_status()` [658..695] - displays current state
-  - `cmd_sdlc_reset()` [698..710] - clears pipeline state
-  - `run_agent_in_worktree()` [770..800] - executes g3 --agent in worktree
-
-**Pipeline Order**: euler → breaker → hopper → fowler → carmack → lamport → huffman
-**State Storage**: `analysis/sdlc/pipeline.json` (git-tracked)
-**CLI**: `studio sdlc run [-c N]`, `studio sdlc status`, `studio sdlc reset`
-
-### Agent Skills Support
-Implements the Agent Skills specification (https://agentskills.io) for portable skill packages.
-
-- `crates/g3-core/src/skills/mod.rs` [0..42] - module exports: `Skill`, `discover_skills`, `generate_skills_prompt`
+- `crates/g3-core/src/skills/mod.rs` [0..47] - exports: `Skill`, `discover_skills`, `generate_skills_prompt`
 - `crates/g3-core/src/skills/parser.rs` [0..363]
-  - `Skill` [11..30] - parsed skill struct with name, description, metadata, body, path
-  - `Skill::parse()` [45..100] - parses SKILL.md content with YAML frontmatter
-  - `Skill::from_file()` [95..105] - loads and parses from disk
-  - `split_frontmatter()` [107..130] - extracts YAML between `---` delimiters
-  - `validate_name()` [133..175] - validates 1-64 chars, lowercase+hyphens
-- `crates/g3-core/src/skills/discovery.rs` [0..268]
-  - `discover_skills()` [28..65] - scans global, extra, workspace dirs in priority order
-  - `load_skills_from_dir()` [68..100] - loads SKILL.md from subdirectories
-  - `expand_tilde()` [120..125] - uses shellexpand for path expansion
+  - `Skill` [11..30] - name, description, metadata, body, path
+  - `Skill::parse()` [45..100] - parses SKILL.md with YAML frontmatter
+  - `validate_name()` [133..175] - 1-64 chars, lowercase+hyphens
+- `crates/g3-core/src/skills/discovery.rs` [0..383]
+  - `discover_skills()` [38..85] - scans 5 locations: embedded → global → extra → workspace → repo
+  - `load_embedded_skills()` [88..102] - synthetic path `<embedded:name>/SKILL.md`
+  - `is_embedded_skill()` [161..163] - checks `<embedded:` prefix
+- `crates/g3-core/src/skills/embedded.rs` [0..87]
+  - `EmbeddedSkill` [22..28] - name, skill_md, scripts[]
+  - `EMBEDDED_SKILLS` [32..42] - static array with include_str! for research skill
+- `crates/g3-core/src/skills/extraction.rs` [0..234]
+  - `extract_script()` [28..85] - extracts to `.g3/bin/`, tracks version hash
+  - `needs_update()` [107..118] - compares stored hash vs content
 - `crates/g3-core/src/skills/prompt.rs` [0..140]
-  - `generate_skills_prompt()` [12..40] - generates `<available_skills>` XML block
-  - `escape_xml()` [42..48] - escapes special XML characters
-- `crates/g3-config/src/lib.rs`
-  - `SkillsConfig` [180..200] - enabled flag, extra_paths vector
-  - Config.skills field [13..14]
-- `crates/g3-cli/src/project_files.rs`
-  - `discover_and_format_skills()` [180..210] - discovers skills and generates prompt section
-  - `combine_project_content()` [87..110] - now includes skills_content parameter
+  - `generate_skills_prompt()` [12..40] - generates `<available_skills>` XML
+- `crates/g3-config/src/lib.rs` [180..200] - `SkillsConfig` (enabled, extra_paths)
+- `crates/g3-cli/src/project_files.rs` [180..210] - `discover_and_format_skills()`
 
-**Skill Locations** (priority order):
-1. `~/.g3/skills/` (global)
-2. Config extra_paths
-3. `.g3/skills/` (workspace, highest priority)
+**Skill Locations** (priority: later overrides earlier):
+1. Embedded (compiled in)
+2. `~/.g3/skills/` (global)
+3. Config extra_paths
+4. `.g3/skills/` (workspace)
+5. `skills/` (repo root)
 
 **SKILL.md Format**:
 ```yaml
@@ -403,42 +245,81 @@ Implements the Agent Skills specification (https://agentskills.io) for portable 
 name: skill-name          # Required: 1-64 chars, lowercase + hyphens
 description: What it does # Required: 1-1024 chars
 license: Apache-2.0       # Optional
-compatibility: Requires X # Optional: max 500 chars
-metadata:                 # Optional: arbitrary key-value
-  author: org
-allowed-tools: Bash Read  # Optional/experimental
+compatibility: Requires X # Optional
 ---
-
-# Skill Title
-Detailed instructions...
+# Instructions...
 ```
 
-### Embedded Skills System
-Skills are portable packages with SKILL.md + optional scripts, discovered from multiple locations.
+### Research Skill (Embedded)
+Async web research via background scout agent. Externalized from core to embedded skill.
 
-- `crates/g3-core/src/skills/embedded.rs`
-  - `EmbeddedSkill` [22..28] - name, skill_md content, scripts array
-  - `EMBEDDED_SKILLS` [32..42] - static array with include_str! for research skill
-  - `get_embedded_skill()` [48..50] - lookup by name
-
-- `crates/g3-core/src/skills/extraction.rs`
-  - `extract_script()` [28..85] - extracts embedded script to `.g3/bin/`, tracks version hash
-  - `needs_update()` [107..118] - compares stored hash vs current content
-  - `compute_hash()` [121..128] - DefaultHasher for version tracking
-
-- `crates/g3-core/src/skills/discovery.rs`
-  - `discover_skills()` [38..85] - scans 5 locations in priority order (embedded → global → extra → workspace → repo)
-  - `load_embedded_skills()` [88..102] - sets synthetic path `<embedded:name>/SKILL.md`
-  - `is_embedded_skill()` [161..163] - checks if path starts with `<embedded:`
-
+- `skills/research/SKILL.md` - skill definition
 - `skills/research/g3-research` - bash script for async research
-  - `write_status()` [52..88] - writes status.json (BUG: sed doesn't escape real newlines)
-  - `extract_report()` [98..135] - extracts between markers or falls back to filtering
+  - `write_status()` - writes status.json
+  - `extract_report()` - extracts between markers or filters output
 
-### SDLC Pipeline Merge
+**Usage**:
+```bash
+background_process("research-topic", ".g3/bin/g3-research 'query'")
+shell(".g3/bin/g3-research --status <id>")  # or --list
+read_file(".g3/research/<id>/report.md")
+```
+
+**Output**: `.g3/research/<id>/status.json` + `report.md`
+
+### Plan Mode
+Structured task planning with cognitive forcing - requires happy/negative/boundary checks.
+
+- `crates/g3-core/src/tools/plan.rs`
+  - `Plan` [200..240] - plan_id, revision, approved_revision, items[]
+  - `PlanItem` [110..145] - id, description, state, touches, checks, evidence, notes
+  - `PlanState` [25..45] - enum: Todo, Doing, Done, Blocked
+  - `Checks` [90..105] - happy, negative[], boundary[]
+  - `get_plan_path()` [280..285] - `.g3/sessions/<id>/plan.g3.md`
+  - `read_plan()`, `write_plan()` [290..335] - YAML in markdown
+  - `plan_verify()` [659..700] - verifies evidence when complete
+  - `execute_plan_read/write/approve()` [395..530] - tool implementations
+- `crates/g3-core/src/tool_definitions.rs` [263..330] - plan_read, plan_write, plan_approve
+- `crates/g3-core/src/prompts.rs` [21..130] - SHARED_PLAN_SECTION
+
+**Tool names**: `plan_read`, `plan_write`, `plan_approve` (underscores, not dots)
+
+### Plan Verification System
+- `crates/g3-core/src/tools/plan.rs`
+  - `EvidenceType` [283..300] - CodeLocation, TestReference, Unknown
+  - `VerificationStatus` [303..320] - Verified, Warning, Error, Skipped
+  - `parse_evidence()` [390..428] - parses `file:line-line` or `file::test_name`
+  - `verify_code_location()` [443..495] - checks file exists, lines in range
+  - `verify_test_reference()` [496..554] - checks test file, searches for fn
+
+**Evidence formats**: `src/foo.rs:42-118`, `src/foo.rs:42`, `tests/foo.rs::test_bar`
+
+### Invariants System (Rulespec & Envelope)
+Machine-readable invariants for Plan Mode verification.
+
+- `crates/g3-core/src/tools/invariants.rs`
+  - `Claim` [50..75] - name + selector
+  - `PredicateRule` [80..120] - Contains, Equals, Exists, NotExists, GreaterThan, LessThan, MinLength, MaxLength, Matches
+  - `Predicate` [125..180] - claim, rule, value, source, notes
+  - `Rulespec` [185..240] - claims[] + predicates[]
+  - `ActionEnvelope` [245..290] - facts HashMap
+  - `Selector` [295..410] - XPath-like: `foo.bar`, `foo[0]`, `foo[*]`
+  - `evaluate_rulespec()` [780..850] - evaluates against envelope
+  - Paths: `.g3/sessions/<id>/rulespec.yaml`, `envelope.yaml`
+
+### Studio SDLC Pipeline
+Orchestrates 7 agents in sequence for codebase maintenance.
+
+- `crates/studio/src/sdlc.rs`
+  - `PIPELINE_STAGES` [28..62] - euler → breaker → hopper → fowler → carmack → lamport → huffman
+  - `Stage` [18..26] - name, description, focus
+  - `StageStatus` [65..80] - Pending, Running, Complete, Failed, Skipped
+  - `PipelineState` [108..140] - run_id, stages[], commit_cursor, session_id
+  - `display_pipeline()` [354..390] - box display with status icons
 - `crates/studio/src/main.rs`
-  - `has_commits_on_branch()` [715..728] - counts commits ahead of main (hardcodes 'main')
-  - `cmd_sdlc_run()` [664..708] - merges on completion, preserves worktree on failure
+  - `cmd_sdlc_run()` [540..655] - orchestrates pipeline, merges on completion
+  - `has_commits_on_branch()` [715..728] - counts commits ahead of main
+- `crates/studio/src/git.rs` - `merge_to_main()` (hardcodes 'main')
 
-- `crates/studio/src/git.rs`
-  - `merge_to_main()` - checkouts main and merges branch (hardcodes 'main')
+**State**: `.g3/sdlc/pipeline.json`
+**CLI**: `studio sdlc run [-c N]`, `studio sdlc status`, `studio sdlc reset`
