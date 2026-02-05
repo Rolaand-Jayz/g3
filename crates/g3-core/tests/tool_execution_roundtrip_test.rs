@@ -420,11 +420,11 @@ items:
         desc: Works
         target: test
       negative:
-        desc: Errors
-        target: test
+        - desc: Errors
+          target: test
       boundary:
-        desc: Edge
-        target: test"#
+        - desc: Edge
+          target: test"#
             }),
         );
         
@@ -477,8 +477,8 @@ items:
     touches: ["src/test.rs"]
     checks:
       happy: {desc: Works, target: test}
-      negative: {desc: Errors, target: test}
-      boundary: {desc: Edge, target: test}"#
+      negative: [{desc: Errors, target: test}]
+      boundary: [{desc: Edge, target: test}]"#
             }),
         );
         agent.execute_tool(&write_call).await.unwrap();

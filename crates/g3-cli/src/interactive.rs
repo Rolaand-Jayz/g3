@@ -415,6 +415,7 @@ pub async fn run_interactive<W: UiWriter>(
                         if approved {
                             // Exit plan mode on successful approval
                             in_plan_mode = false;
+                            agent.set_plan_mode(false);
                             
                             // Add synthetic assistant message so LLM knows plan was approved
                             use g3_providers::{Message, MessageRole};
@@ -448,6 +449,7 @@ pub async fn run_interactive<W: UiWriter>(
                             }
                             CommandResult::EnterPlanMode => {
                                 in_plan_mode = true;
+                                agent.set_plan_mode(true);
                                 continue;
                             }
                         }
@@ -480,6 +482,7 @@ pub async fn run_interactive<W: UiWriter>(
                 if in_plan_mode {
                     output.print("CTRL-D (exiting plan mode)");
                     in_plan_mode = false;
+                    agent.set_plan_mode(false);
                     // Continue the loop with normal prompt
                     continue;
                 } else {

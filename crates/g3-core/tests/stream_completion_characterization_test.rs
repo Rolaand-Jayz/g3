@@ -616,11 +616,11 @@ items:
         desc: Works correctly
         target: test::module
       negative:
-        desc: Handles errors
-        target: test::module
+        - desc: Handles errors
+          target: test::module
       boundary:
-        desc: Edge cases
-        target: test::module"#
+        - desc: Edge cases
+          target: test::module"#
             }),
         };
         let write_result = agent.execute_tool(&write_call).await.unwrap();

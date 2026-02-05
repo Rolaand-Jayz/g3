@@ -155,6 +155,8 @@ pub struct Agent<W: UiWriter> {
     auto_memory: bool,
     /// Whether aggressive context dehydration is enabled (--acd flag)
     acd_enabled: bool,
+    /// Whether plan mode is active (gate blocks file changes without approved plan)
+    in_plan_mode: bool,
     /// Manager for async research tasks
     pending_research_manager: pending_research::PendingResearchManager,
 }
@@ -210,6 +212,7 @@ impl<W: UiWriter> Agent<W> {
             agent_name: None,
             auto_memory: false,
             acd_enabled: false,
+            in_plan_mode: false,
             pending_research_manager: pending_research::PendingResearchManager::new(),
         }
     }
@@ -1609,6 +1612,16 @@ impl<W: UiWriter> Agent<W> {
         );
     }
 
+    /// Enable or disable plan mode (blocks file changes without approved plan)
+    pub fn set_plan_mode(&mut self, enabled: bool) {
+        self.in_plan_mode = enabled;
+    }
+
+    /// Check if plan mode is active
+    pub fn is_plan_mode(&self) -> bool {
+        self.in_plan_mode
+    }
+
     // =========================================================================
     // STREAMING & LLM INTERACTION
     // =========================================================================
@@ -2901,13 +2914,15 @@ Skip if nothing new. Be brief."#;
 
         let result = self.execute_tool_inner_in_dir(tool_call, working_dir).await;
 
-        // Check plan approval gate after tool execution
-        if let Some(session_id) = &self.session_id {
+        // Check plan approval gate after tool execution (only in plan mode)
+        if self.in_plan_mode {
+            if let Some(session_id) = &self.session_id {
             if let ApprovalGateResult::Blocked { message, .. } = 
                 check_plan_approval_gate(session_id, working_dir) 
             {
                 // Return the blocking message instead of the tool result
                 return Ok(message);
+            }
             }
         }
 

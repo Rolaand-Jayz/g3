@@ -906,6 +906,9 @@ async fn test_plan_approval_gate_blocks_unapproved_changes() {
     // Set the working directory to the temp git repo
     agent.set_working_dir(temp_path.to_string_lossy().to_string());
     
+    // Enable plan mode (required for the gate check to run)
+    agent.set_plan_mode(true);
+    
     // Create an unapproved plan for this session
     let mut plan = Plan::new("test-plan");
     plan.items.push(PlanItem {
@@ -915,8 +918,8 @@ async fn test_plan_approval_gate_blocks_unapproved_changes() {
         touches: vec!["src/test.rs".to_string()],
         checks: Checks {
             happy: Check::new("happy", "target"),
-            negative: Check::new("negative", "target"),
-            boundary: Check::new("boundary", "target"),
+            negative: vec![Check::new("negative", "target")],
+            boundary: vec![Check::new("boundary", "target")],
         },
         evidence: vec![],
         notes: None,
