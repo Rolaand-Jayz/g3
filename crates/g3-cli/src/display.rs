@@ -190,17 +190,6 @@ pub fn print_loaded_status(loaded: &LoadedContent) {
     println!();
 }
 
-/// Print the project name/heading from README content.
-pub fn print_project_heading(heading: &str) {
-    print!(
-        "{}>> {}{}",
-        SetForegroundColor(Color::DarkGrey),
-        heading,
-        ResetColor
-    );
-    println!();
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

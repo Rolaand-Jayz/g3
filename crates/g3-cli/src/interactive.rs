@@ -13,10 +13,9 @@ use g3_core::Agent;
 use g3_core::ToolCall;
 
 use crate::commands::{handle_command, CommandResult};
-use crate::display::{LoadedContent, print_loaded_status, print_project_heading, print_workspace_path};
+use crate::display::{LoadedContent, print_loaded_status, print_workspace_path};
 use crate::g3_status::G3Status;
 use crate::project::Project;
-use crate::project_files::extract_project_heading;
 use crate::simple_output::SimpleOutput;
 use crate::input_formatter::reprint_formatted_input;
 use crate::template::process_template;
@@ -198,11 +197,6 @@ pub async fn run_interactive<W: UiWriter>(
            // Display message if AGENTS.md or README was loaded
         if let Some(ref content) = combined_content {
             let loaded = LoadedContent::from_combined_content(content);
-
-            // Extract project name from AGENTS.md or memory
-            if let Some(name) = extract_project_heading(content) {
-                print_project_heading(&name);
-            }
 
             print_loaded_status(&loaded);
         }
