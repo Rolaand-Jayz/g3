@@ -12,15 +12,13 @@
 
 use std::collections::HashMap;
 
-/// An embedded skill with its SKILL.md content and optional scripts.
+/// An embedded skill with its SKILL.md content.
 #[derive(Debug, Clone)]
 pub struct EmbeddedSkill {
     /// Skill name (must match the name in SKILL.md frontmatter)
     pub name: &'static str,
     /// Content of SKILL.md
     pub skill_md: &'static str,
-    /// Scripts bundled with the skill: (filename, content)
-    pub scripts: &'static [(&'static str, &'static str)],
 }
 
 /// All embedded skills, compiled into the binary.
@@ -32,9 +30,6 @@ static EMBEDDED_SKILLS: &[EmbeddedSkill] = &[
     EmbeddedSkill {
         name: "research",
         skill_md: include_str!("../../../../skills/research/SKILL.md"),
-        scripts: &[
-            ("g3-research", include_str!("../../../../skills/research/g3-research")),
-        ],
     },
 ];
 
@@ -70,7 +65,6 @@ mod tests {
         
         let skill = skill.unwrap();
         assert!(skill.skill_md.contains("name: research"), "SKILL.md should have name field");
-        assert!(!skill.scripts.is_empty(), "Research skill should have scripts");
     }
 
     #[test]

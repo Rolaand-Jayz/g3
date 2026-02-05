@@ -9,6 +9,7 @@ use tracing::debug;
 use crate::ui_writer::UiWriter;
 use crate::utils::resolve_path_with_unicode_fallback;
 use crate::utils::apply_unified_diff_to_string;
+use crate::skills::get_embedded_skill;
 use crate::ToolCall;
 
 use super::executor::ToolContext;
@@ -68,6 +69,28 @@ fn calculate_read_limit(file_bytes: usize, total_tokens: u32, used_tokens: u32) 
     Some(max_bytes)
 }
 
+/// Try to read an embedded skill by path.
+/// 
+/// Recognizes paths like:
+/// - `<embedded:research>/SKILL.md`
+/// - `<embedded:skill-name>/SKILL.md`
+///
+/// Returns the skill content if found, None otherwise.
+fn try_read_embedded_skill(path: &str) -> Option<&'static str> {
+    // Check for embedded skill path pattern: <embedded:name>/SKILL.md
+    if !path.starts_with("<embedded:") {
+        return None;
+    }
+    
+    // Extract skill name from path like "<embedded:research>/SKILL.md"
+    let after_prefix = path.strip_prefix("<embedded:")?;
+    let skill_name = after_prefix.split('>').next()?;
+    
+    // Look up the embedded skill
+    let skill = get_embedded_skill(skill_name)?;
+    Some(skill.skill_md)
+}
+
 /// Execute the `read_file` tool.
 pub async fn execute_read_file<W: UiWriter>(
     tool_call: &ToolCall,
@@ -80,13 +103,7 @@ pub async fn execute_read_file<W: UiWriter>(
         None => return Ok("❌ Missing file_path argument".to_string()),
     };
 
-    // Expand tilde (~) to home directory
-    let expanded_path = shellexpand::tilde(file_path);
-    // Try to resolve with Unicode space fallback (macOS uses U+202F in screenshot names)
-    let resolved_path = resolve_path_with_unicode_fallback(expanded_path.as_ref());
-    let path_str = resolved_path.as_ref();
-
-    // Extract optional start and end positions
+    // Extract optional start and end positions (needed for both embedded and file reads)
     let start_char = tool_call
         .args
         .get("start")
@@ -97,6 +114,25 @@ pub async fn execute_read_file<W: UiWriter>(
         .get("end")
         .and_then(|v| v.as_u64())
         .map(|n| n as usize);
+
+    // Check for embedded skill paths (e.g., "<embedded:research>/SKILL.md")
+    if let Some(content) = try_read_embedded_skill(file_path) {
+        let total_len = content.len();
+        let start = start_char.unwrap_or(0);
+        let end = end_char.unwrap_or(total_len).min(total_len);
+        if start >= total_len {
+            return Ok(format!("❌ Start position {} exceeds embedded skill length {}", start, total_len));
+        }
+        let slice = &content[start..end];
+        let line_count = slice.lines().count();
+        return Ok(format!("{}\n🔍 {} lines read (embedded skill)", slice, line_count));
+    }
+
+    // Expand tilde (~) to home directory
+    let expanded_path = shellexpand::tilde(file_path);
+    // Try to resolve with Unicode space fallback (macOS uses U+202F in screenshot names)
+    let resolved_path = resolve_path_with_unicode_fallback(expanded_path.as_ref());
+    let path_str = resolved_path.as_ref();
 
     debug!(
         "Reading file: {}, start={:?}, end={:?}",

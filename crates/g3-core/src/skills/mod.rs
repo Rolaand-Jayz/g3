@@ -39,7 +39,6 @@ mod parser;
 mod discovery;
 mod prompt;
 mod embedded;
-pub mod extraction;
 
 pub use parser::Skill;
 pub use discovery::discover_skills;
