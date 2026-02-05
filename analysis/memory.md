@@ -367,3 +367,48 @@ Orchestrates 7 g3 agents in sequence for codebase maintenance.
 **Pipeline Order**: euler → breaker → hopper → fowler → carmack → lamport → huffman
 **State Storage**: `analysis/sdlc/pipeline.json` (git-tracked)
 **CLI**: `studio sdlc run [-c N]`, `studio sdlc status`, `studio sdlc reset`
+
+### Agent Skills Support
+Implements the Agent Skills specification (https://agentskills.io) for portable skill packages.
+
+- `crates/g3-core/src/skills/mod.rs` [0..42] - module exports: `Skill`, `discover_skills`, `generate_skills_prompt`
+- `crates/g3-core/src/skills/parser.rs` [0..363]
+  - `Skill` [11..30] - parsed skill struct with name, description, metadata, body, path
+  - `Skill::parse()` [45..100] - parses SKILL.md content with YAML frontmatter
+  - `Skill::from_file()` [95..105] - loads and parses from disk
+  - `split_frontmatter()` [107..130] - extracts YAML between `---` delimiters
+  - `validate_name()` [133..175] - validates 1-64 chars, lowercase+hyphens
+- `crates/g3-core/src/skills/discovery.rs` [0..268]
+  - `discover_skills()` [28..65] - scans global, extra, workspace dirs in priority order
+  - `load_skills_from_dir()` [68..100] - loads SKILL.md from subdirectories
+  - `expand_tilde()` [120..125] - uses shellexpand for path expansion
+- `crates/g3-core/src/skills/prompt.rs` [0..140]
+  - `generate_skills_prompt()` [12..40] - generates `<available_skills>` XML block
+  - `escape_xml()` [42..48] - escapes special XML characters
+- `crates/g3-config/src/lib.rs`
+  - `SkillsConfig` [180..200] - enabled flag, extra_paths vector
+  - Config.skills field [13..14]
+- `crates/g3-cli/src/project_files.rs`
+  - `discover_and_format_skills()` [180..210] - discovers skills and generates prompt section
+  - `combine_project_content()` [87..110] - now includes skills_content parameter
+
+**Skill Locations** (priority order):
+1. `~/.g3/skills/` (global)
+2. Config extra_paths
+3. `.g3/skills/` (workspace, highest priority)
+
+**SKILL.md Format**:
+```yaml
+---
+name: skill-name          # Required: 1-64 chars, lowercase + hyphens
+description: What it does # Required: 1-1024 chars
+license: Apache-2.0       # Optional
+compatibility: Requires X # Optional: max 500 chars
+metadata:                 # Optional: arbitrary key-value
+  author: org
+allowed-tools: Bash Read  # Optional/experimental
+---
+
+# Skill Title
+Detailed instructions...
+```

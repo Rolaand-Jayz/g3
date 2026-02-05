@@ -23,6 +23,7 @@ pub mod tools;
 pub mod ui_writer;
 pub mod utils;
 pub mod webdriver_session;
+pub mod skills;
 
 pub use feedback_extraction::{
     extract_coach_feedback, ExtractedFeedback, FeedbackExtractionConfig, FeedbackSource,
@@ -42,7 +43,13 @@ pub use context_window::{ContextWindow, ThinResult, ThinScope};
 pub use pending_research::{PendingResearchManager, ResearchCompletionNotification, ResearchStatus};
 
 // Export agent prompt generation for CLI use
-pub use prompts::get_agent_system_prompt;
+pub use prompts::{
+    get_agent_system_prompt, get_agent_system_prompt_with_skills,
+    get_system_prompt_for_native_with_skills, get_system_prompt_for_non_native_with_skills,
+};
+
+// Export skills module
+pub use skills::{Skill, discover_skills, generate_skills_prompt};
 
 #[cfg(test)]
 mod task_result_comprehensive_tests;

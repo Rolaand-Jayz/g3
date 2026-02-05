@@ -6,7 +6,7 @@ use tracing::debug;
 use g3_core::ui_writer::UiWriter;
 use g3_core::Agent;
 
-use crate::project_files::{combine_project_content, read_agents_config, read_include_prompt, read_workspace_memory};
+use crate::project_files::{combine_project_content, discover_and_format_skills, read_agents_config, read_include_prompt, read_workspace_memory};
 use crate::display::{LoadedContent, print_loaded_status, print_workspace_path};
 use crate::language_prompts::{get_language_prompts_for_workspace, get_agent_language_prompts_for_workspace_with_langs};
 use crate::simple_output::SimpleOutput;
@@ -173,12 +173,16 @@ pub async fn run_agent_mode(
         system_prompt
     };
 
+    // Discover skills from configured paths
+    let (_skills, skills_content) = discover_and_format_skills(&workspace_dir, &config.skills);
+
     // Combine all content for the agent's context
     let combined_content = combine_project_content(
         agents_content_opt,
         memory_content_opt,
         language_content,
         include_prompt,
+        skills_content,
         &workspace_dir,
     );
 
