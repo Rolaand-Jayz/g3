@@ -1,7 +1,7 @@
 # g3 Architecture
 
-**Last updated**: January 2025  
-**Source of truth**: Crate structure in `crates/`, `Cargo.toml`, `DESIGN.md`
+**Last updated**: February 2025  
+**Source of truth**: Crate structure in `crates/`, `Cargo.toml`, `DESIGN.md`, `skills/`
 
 ## Purpose
 
@@ -72,6 +72,7 @@ g3/
 │   ├── g3-planner/               # Planning mode workflow
 │   └── studio/                   # Multi-agent workspace manager
 ├── agents/                       # Agent persona definitions
+├── skills/                       # Embedded skills (research, etc.)
 ├── logs/                         # Session logs (auto-created)
 └── g3-plan/                      # Planning artifacts
 ```
@@ -94,6 +95,7 @@ Key modules:
 - `retry.rs` - Retry logic with exponential backoff
 - `prompts.rs` - System prompt generation
 - `code_search/` - Tree-sitter based code search
+- `skills/` - Agent Skills discovery, parsing, and extraction
 
 **Key types**:
 - `Agent<W: UiWriter>` - Main agent struct, generic over UI output
@@ -229,6 +231,57 @@ Key modules:
 - `session.rs` - Session metadata and status tracking
 
 Studio enables isolated agent sessions by creating git worktrees, allowing multiple agents to work on the same codebase without conflicts.
+
+### Skills System (Extensible Capabilities)
+
+**Location**: `crates/g3-core/src/skills/` and `skills/`  
+**Purpose**: Portable skill packages that extend agent capabilities
+
+g3 implements the [Agent Skills](https://agentskills.io) specification, allowing skills to be discovered from multiple locations and embedded into the binary for portability.
+
+Key modules in `crates/g3-core/src/skills/`:
+- `mod.rs` - Module exports and public API
+- `parser.rs` - SKILL.md frontmatter and body parsing
+- `discovery.rs` - Multi-location skill discovery with priority ordering
+- `embedded.rs` - Skills compiled into the binary via `include_str!`
+- `extraction.rs` - Script extraction to `.g3/bin/` with version tracking
+- `prompt.rs` - Generates `<available_skills>` XML for system prompt
+
+**Discovery Priority** (lowest to highest):
+1. Embedded skills (compiled into binary)
+2. Global: `~/.g3/skills/`
+3. Extra paths from config
+4. Workspace: `.g3/skills/`
+5. Repo: `skills/` (highest priority, checked into git)
+
+**Embedded Skills**:
+
+Core skills are embedded at compile time using `include_str!`, ensuring g3 works anywhere without external files:
+
+```rust
+static EMBEDDED_SKILLS: &[EmbeddedSkill] = &[
+    EmbeddedSkill {
+        name: "research",
+        skill_md: include_str!("../../../../skills/research/SKILL.md"),
+        scripts: &[
+            ("g3-research", include_str!("../../../../skills/research/g3-research")),
+        ],
+    },
+];
+```
+
+**Script Extraction**:
+
+Embedded scripts are extracted to `.g3/bin/` on first use:
+- Version tracking via content hash in `.g3/bin/<script>.version`
+- Automatic re-extraction when embedded version changes
+- Scripts are made executable (chmod 755 on Unix)
+
+**Key types**:
+- `Skill` - Parsed skill with name, description, metadata, body, path
+- `EmbeddedSkill` - Compile-time skill with SKILL.md and scripts
+
+See [Skills Guide](skills.md) for detailed usage and authoring instructions.
 
 ## Data Flow
 
