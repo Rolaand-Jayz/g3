@@ -49,10 +49,10 @@ Each plan item MUST have:
 - `description`: What will be done
 - `state`: todo | doing | done | blocked
 - `touches`: Paths/modules this affects (forces \"where does this live?\")
-- `checks`: Three required perspectives:
+- `checks`: Required test perspectives:
   - `happy`: {desc, target} - Normal successful operation
-  - `negative`: {desc, target} - Error handling, invalid input
-  - `boundary`: {desc, target} - Edge cases, limits
+  - `negative`: [{desc, target}, ...] - Error handling, invalid input (>=1 required)
+  - `boundary`: [{desc, target}, ...] - Edge cases, limits (>=1 required)
 - `evidence`: (required when done) File:line refs, test names
 - `notes`: (required when done) Short implementation explanation
 
@@ -79,11 +79,15 @@ When updating a plan:
       desc: \"Valid CSV imports 3 comics\"
       target: \"import::csv\"
     negative:
-      desc: \"Missing column errors with MissingColumn\"
-      target: \"import::csv\"
+      - desc: \"Missing column errors with MissingColumn\"
+        target: \"import::csv\"
+      - desc: \"Malformed row errors with ParseError\"
+        target: \"import::csv\"
     boundary:
-      desc: \"Empty file yields empty import without error\"
-      target: \"import::csv\"
+      - desc: \"Empty file yields empty import without error\"
+        target: \"import::csv\"
+      - desc: \"File with only headers yields empty import\"
+        target: \"import::csv\"
 ```
 
 When done, add evidence and notes:
@@ -306,7 +310,7 @@ Short description for providers without native calling specs:
 
 - **plan_write**: Create or update the Plan with YAML content
   - Format: {\"tool\": \"plan_write\", \"args\": {\"plan\": \"plan_id: my-plan\\nitems: [...]\"}}
-  - Example: {\"tool\": \"plan_write\", \"args\": {\"plan\": \"plan_id: feature-x\\nitems:\\n  - id: I1\\n    description: Add feature\\n    state: todo\\n    touches: [src/lib.rs]\\n    checks:\\n      happy: {desc: Works, target: lib}\\n      negative: {desc: Errors, target: lib}\\n      boundary: {desc: Edge, target: lib}\"}}
+  - Example: {\"tool\": \"plan_write\", \"args\": {\"plan\": \"plan_id: feature-x\\nitems:\\n  - id: I1\\n    description: Add feature\\n    state: todo\\n    touches: [src/lib.rs]\\n    checks:\\n      happy: {desc: Works, target: lib}\\n      negative:\\n        - {desc: Errors, target: lib}\\n      boundary:\\n        - {desc: Edge, target: lib}\"}}
 
 - **plan_approve**: Approve the current plan revision (called by user)
   - Format: {\"tool\": \"plan_approve\", \"args\": {}}

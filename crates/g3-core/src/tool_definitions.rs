@@ -289,14 +289,14 @@ fn create_core_tools(exclude_research: bool) -> Vec<Tool> {
   - touches: Array of paths/modules affected
   - checks:
       happy: {desc, target} - Normal successful operation
-      negative: {desc, target} - Error handling, invalid input
-      boundary: {desc, target} - Edge cases, limits
+      negative: [{desc, target}, ...] - Error handling, invalid input (>=1 required)
+      boundary: [{desc, target}, ...] - Edge cases, limits (>=1 required)
   - evidence: Array of file:line refs, test names (required when done)
   - notes: Implementation explanation (required when done)
 
 Rules:
 - Keep items ≤ 7 by default
-- All three checks (happy, negative, boundary) are required
+- All checks required: 1 happy, 1+ negative, 1+ boundary
 - Cannot remove items from an approved plan (mark as blocked instead)
 - Evidence and notes required when marking item as done"#.to_string(),
         input_schema: json!({
