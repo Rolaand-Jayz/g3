@@ -1010,8 +1010,34 @@ pub fn check_plan_approval_gate(session_id: &str, working_dir: Option<&str>) -> 
     // Check if a plan exists and whether it's approved
     let plan = match read_plan(session_id) {
         Ok(Some(plan)) => plan,
-        Ok(None) => return ApprovalGateResult::Allowed, // No plan, allow
-        Err(_) => return ApprovalGateResult::Allowed,   // Can't read plan, allow
+        Ok(None) => {
+            // No plan exists - check if there are file changes that need blocking
+            let status_output = std::process::Command::new("git")
+                .args(["status", "--porcelain"])
+                .current_dir(dir)
+                .output();
+            
+            let output = match status_output {
+                Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
+                _ => return ApprovalGateResult::Allowed,
+            };
+            
+            if output.trim().is_empty() {
+                return ApprovalGateResult::Allowed; // No changes, allow
+            }
+            
+            // There are file changes but no plan - block and require plan creation
+            return ApprovalGateResult::Blocked {
+                message: "⚠️ IMPLEMENTATION BLOCKED\n\n\
+                    You attempted to modify files without creating a plan first.\n\n\
+                    Before implementing, you must:\n\
+                    1. Create a plan with `plan_write`\n\
+                    2. Get the plan approved by the user\n\n\
+                    Do not attempt to implement until the plan is approved.".to_string(),
+                reverted_files: vec![],
+            };
+        }
+        Err(_) => return ApprovalGateResult::Allowed,   // Can't read plan, allow (error case)
     };
     
     if plan.is_approved() {
@@ -1424,10 +1450,38 @@ items: []
     }
 
     #[test]
-    fn test_approval_gate_no_plan() {
-        // With a non-existent session, there's no plan, so it should allow
-        let result = check_plan_approval_gate("nonexistent-session-xyz", Some("."));
+    fn test_approval_gate_no_plan_no_changes() {
+        // With a non-existent session and no uncommitted changes, it should allow.
+        // We use a temp dir that's a fresh git repo with no changes.
+        let temp_dir = tempfile::tempdir().unwrap();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(temp_dir.path())
+            .output()
+            .unwrap();
+        let result = check_plan_approval_gate("nonexistent-session-xyz", Some(temp_dir.path().to_str().unwrap()));
         assert!(matches!(result, ApprovalGateResult::Allowed));
+    }
+
+    #[test]
+    fn test_approval_gate_no_plan_with_changes() {
+        // With a non-existent session but uncommitted changes, it should block.
+        let temp_dir = tempfile::tempdir().unwrap();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(temp_dir.path())
+            .output()
+            .unwrap();
+        // Create an untracked file to simulate changes
+        std::fs::write(temp_dir.path().join("new_file.txt"), "test content").unwrap();
+        
+        let result = check_plan_approval_gate("nonexistent-session-xyz", Some(temp_dir.path().to_str().unwrap()));
+        assert!(matches!(result, ApprovalGateResult::Blocked { .. }));
+        
+        // Verify the blocking message mentions creating a plan
+        if let ApprovalGateResult::Blocked { message, .. } = result {
+            assert!(message.contains("plan_write"));
+        }
     }
 
     #[test]

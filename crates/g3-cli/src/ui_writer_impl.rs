@@ -716,6 +716,7 @@ impl UiWriter for ConsoleUiWriter {
                 #[derive(serde::Deserialize)]
                 struct PlanCompact {
                     plan_id: String,
+                    #[allow(dead_code)]
                     revision: u32,
                     approved_revision: Option<u32>,
                     items: Vec<PlanItemCompact>,
@@ -731,6 +732,7 @@ impl UiWriter for ConsoleUiWriter {
                     #[serde(default)]
                     evidence: Vec<String>,
                     #[serde(default)]
+                    #[allow(dead_code)]
                     notes: Option<String>,
                 }
                 #[derive(serde::Deserialize)]

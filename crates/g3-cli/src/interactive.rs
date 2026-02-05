@@ -52,6 +52,18 @@ pub fn build_prompt(in_multiline: bool, in_plan_mode: bool, agent_name: Option<&
     }
 }
 
+/// Prepare user input for plan mode, prepending "Create a plan: " if this is the first message.
+/// Returns the (possibly modified) input and whether the flag should be reset.
+pub fn prepare_plan_mode_input(input: &str, is_first_plan_message: bool, in_plan_mode: bool) -> (String, bool) {
+    if in_plan_mode && is_first_plan_message {
+        // Prepend "Create a plan: " and signal to reset the flag
+        (format!("Create a plan: {}", input), true)
+    } else {
+        // No modification needed
+        (input.to_string(), false)
+    }
+}
+
 /// Check if the input is an approval command (for plan mode).
 ///
 /// Recognizes: "a", "approve", "approved", and common misspellings.
@@ -191,6 +203,9 @@ pub async fn run_interactive<W: UiWriter>(
     // Track plan mode state (start in plan mode for non-agent mode)
     let mut in_plan_mode = !from_agent_mode;
     
+    // Track if this is the first message in plan mode (to prepend "Create a plan: ")
+    let mut is_first_plan_message = in_plan_mode;
+    
     // Sync agent's plan mode state with CLI state
     agent.set_plan_mode(in_plan_mode);
 
@@ -275,8 +290,13 @@ pub async fn run_interactive<W: UiWriter>(
                     // Reprint input with formatting
                     reprint_formatted_input(&input, &prompt);
 
+                    // Prepend "Create a plan: " for first message in plan mode
+                    let (final_input, should_reset) = prepare_plan_mode_input(&input, is_first_plan_message, in_plan_mode);
+                    if should_reset {
+                        is_first_plan_message = false;
+                    }
                     execute_user_input(
-                        &mut agent, &input, show_prompt, show_code, &output, from_agent_mode
+                        &mut agent, &final_input, show_prompt, show_code, &output, from_agent_mode
                     ).await;
                 } else {
                     // Single line input
@@ -328,6 +348,7 @@ pub async fn run_interactive<W: UiWriter>(
                             CommandResult::EnterPlanMode => {
                                 in_plan_mode = true;
                                 agent.set_plan_mode(true);
+                                is_first_plan_message = true;
                                 continue;
                             }
                         }
@@ -336,8 +357,13 @@ pub async fn run_interactive<W: UiWriter>(
                     // Reprint input with formatting
                     reprint_formatted_input(&input, &prompt);
 
+                    // Prepend "Create a plan: " for first message in plan mode
+                    let (final_input, should_reset) = prepare_plan_mode_input(&input, is_first_plan_message, in_plan_mode);
+                    if should_reset {
+                        is_first_plan_message = false;
+                    }
                     execute_user_input(
-                        &mut agent, &input, show_prompt, show_code, &output, from_agent_mode
+                        &mut agent, &final_input, show_prompt, show_code, &output, from_agent_mode
                     ).await;
                 }
             }
@@ -528,6 +554,66 @@ mod tests {
         assert!(is_approval_input("approve."));
         assert!(is_approval_input("yes!"));
         assert!(is_approval_input("ok,"));
+    }
+
+    // Tests for prepare_plan_mode_input
+
+    #[test]
+    fn test_prepare_plan_mode_input_happy_path_first_message() {
+        // Happy path: First message in plan mode gets "Create a plan: " prefix
+        let (result, should_reset) = prepare_plan_mode_input("fix the bug", true, true);
+        assert_eq!(result, "Create a plan: fix the bug");
+        assert!(should_reset);
+    }
+
+    #[test]
+    fn test_prepare_plan_mode_input_negative_second_message() {
+        // Negative: Second message (is_first_plan_message = false) should NOT get prefix
+        let (result, should_reset) = prepare_plan_mode_input("fix the bug", false, true);
+        assert_eq!(result, "fix the bug");
+        assert!(!should_reset);
+    }
+
+    #[test]
+    fn test_prepare_plan_mode_input_negative_not_in_plan_mode() {
+        // Negative: Not in plan mode should NOT get prefix even if is_first_plan_message is true
+        let (result, should_reset) = prepare_plan_mode_input("fix the bug", true, false);
+        assert_eq!(result, "fix the bug");
+        assert!(!should_reset);
+    }
+
+    #[test]
+    fn test_prepare_plan_mode_input_negative_neither_condition() {
+        // Negative: Neither in plan mode nor first message
+        let (result, should_reset) = prepare_plan_mode_input("fix the bug", false, false);
+        assert_eq!(result, "fix the bug");
+        assert!(!should_reset);
+    }
+
+    #[test]
+    fn test_prepare_plan_mode_input_boundary_empty_input() {
+        // Boundary: Empty input would get prefix, but in practice empty input
+        // is filtered out by the caller before reaching this function.
+        // This test documents the function's behavior in isolation.
+        let (result, should_reset) = prepare_plan_mode_input("", true, true);
+        assert_eq!(result, "Create a plan: ");
+        assert!(should_reset);
+    }
+
+    #[test]
+    fn test_prepare_plan_mode_input_boundary_whitespace_input() {
+        // Boundary: Whitespace-only input gets prefix preserved
+        let (result, should_reset) = prepare_plan_mode_input("   ", true, true);
+        assert_eq!(result, "Create a plan:    ");
+        assert!(should_reset);
+    }
+
+    #[test]
+    fn test_prepare_plan_mode_input_boundary_multiline_input() {
+        // Boundary: Multiline input gets prefix on first line only
+        let (result, should_reset) = prepare_plan_mode_input("line1\nline2\nline3", true, true);
+        assert_eq!(result, "Create a plan: line1\nline2\nline3");
+        assert!(should_reset);
     }
 }
 
