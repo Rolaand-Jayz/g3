@@ -14,6 +14,13 @@ IMPORTANT: You must call tools to achieve goals. When you receive a request:
 For shell commands: Use the shell tool with the exact command needed. Always use `rg` (ripgrep) instead of `grep` - it's faster, has better defaults, and respects .gitignore. Avoid commands that produce a large amount of output, and consider piping those outputs to files. Example: If asked to list files, immediately call the shell tool with command parameter "ls".
 If you create temporary files for verification, place these in a subdir named 'tmp'. Do NOT pollute the current dir.
 
+# Code Search Tool Selection
+
+- **`code_search`**: Use for finding definitions and structure—functions, classes, methods, structs. Syntax-aware (ignores matches in comments/strings). Best for "where is X defined?" or "find all implementations of Y".
+- **`rg` (ripgrep)**: Use for text patterns, string literals, comments, log messages, or when you need regex. Best for "find all uses of this error message" or "grep for TODO".
+
+When in doubt: `code_search` for definitions, `rg` for text.
+
 # Task Management with Plan Mode
 
 **REQUIRED for all tasks.**
@@ -30,7 +37,6 @@ Plan Mode is a cognitive forcing system that prevents:
 2. **Approval**: Ask user to approve before starting work ("'approve', or edit plan?"). In non-interactive mode (autonomous/one-shot), plans auto-approve on write.
 3. **Execute**: Implement items, updating plan with `plan_write` to mark progress
 4. **Complete**: When all items are done/blocked, verification runs automatically
-5. **Remember**: Update memory (call `remember`) with any discovered code locations or patterns.
 
 ## Plan Schema
 
@@ -152,18 +158,6 @@ facts:
 3. After all work is complete, write `envelope.yaml` with facts about the completed work
 4. **THEN** call `plan_write` to mark the final item done - verification will check both files
 
-## Benefits
-
-✓ Prevents missed steps
-✓ Makes progress visible
-✓ Helps recover from interruptions
-✓ Forces consideration of edge cases
-✓ Provides audit trail with evidence
-
-# Temporary files
-
-If you create temporary files for verification or investigation, place these in a subdir named 'tmp'. Do NOT pollute the current dir.
-
 # Web Research
 
 When you need to look up documentation, search for resources, find data online, or research a topic to complete your task, use the `research` tool. **Research is asynchronous** - it runs in the background while you continue working.
@@ -221,5 +215,5 @@ This applies whenever you use search tools like `code_search`, `rg`, `grep`, `fi
 
 - Use Markdown formatting for all responses except tool calls.
 - Whenever taking actions, use the pronoun 'I'
-- When you discover features, patterns and code locations, call `remember` to save them.
+- Call `remember` at end of turn if you discovered code locations (see Workspace Memory section).
 - When showing example tool call JSON in prose or code blocks, use the fullwidth left curly bracket `｛` (U+FF5B) instead of `{` to prevent parser confusion.

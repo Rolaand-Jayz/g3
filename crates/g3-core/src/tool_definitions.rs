@@ -167,42 +167,6 @@ fn create_core_tools(exclude_research: bool) -> Vec<Tool> {
             }),
         },
         Tool {
-            name: "screenshot".to_string(),
-            description: "Capture a screenshot of a specific application window. You MUST specify the window_id parameter with the application name (e.g., 'Safari', 'Terminal', 'Google Chrome'). The tool will automatically use the native screencapture command with the application's window ID for a clean capture. Use list_windows first to identify available windows.".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Filename for the screenshot (e.g., 'safari.png'). If a relative path is provided, the screenshot will be saved to ~/tmp or $TMPDIR. Use an absolute path to save elsewhere."
-                    },
-                    "window_id": {
-                        "type": "string",
-                        "description": "REQUIRED: Application name to capture (e.g., 'Safari', 'Terminal', 'Google Chrome'). The tool will capture the frontmost window of that application using its native window ID."
-                    },
-                    "region": {
-                        "type": "object",
-                        "properties": {
-                            "x": {"type": "integer"},
-                            "y": {"type": "integer"},
-                            "width": {"type": "integer"},
-                            "height": {"type": "integer"}
-                        }
-                    }
-                },
-                "required": ["path", "window_id"]
-            }),
-        },
-        Tool {
-            name: "coverage".to_string(),
-            description: "Generate a code coverage report for the entire workspace using cargo llvm-cov. This runs all tests with coverage instrumentation and returns a summary of coverage statistics. Requires llvm-tools-preview and cargo-llvm-cov to be installed (they will be auto-installed if missing).".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {},
-                "required": []
-            }),
-        },
-        Tool {
             name: "code_search".to_string(),
             description: "Syntax-aware code search that understands code structure, not just text. Finds actual functions, classes, methods, and other code constructs - ignores matches in comments and strings. Much more accurate than grep for code searches. Supports batch searches (up to 20 parallel) with structured results and context lines. Languages: Rust, Python, JavaScript, TypeScript, Go, Java, C, C++, Racket. Uses tree-sitter query syntax.".to_string(),
             input_schema: json!({
@@ -278,27 +242,7 @@ fn create_core_tools(exclude_research: bool) -> Vec<Tool> {
 
     tools.push(Tool {
         name: "plan_write".to_string(),
-        description: r#"Create or update the Plan for this session. The plan must be provided as YAML with the following structure:
-
-- plan_id: Unique identifier for the plan
-- revision: Will be auto-incremented
-- items: Array of plan items, each with:
-  - id: Stable identifier (e.g., "I1")
-  - description: What will be done
-  - state: todo | doing | done | blocked
-  - touches: Array of paths/modules affected
-  - checks:
-      happy: {desc, target} - Normal successful operation
-      negative: [{desc, target}, ...] - Error handling, invalid input (>=1 required)
-      boundary: [{desc, target}, ...] - Edge cases, limits (>=1 required)
-  - evidence: Array of file:line refs, test names (required when done)
-  - notes: Implementation explanation (required when done)
-
-Rules:
-- Keep items ≤ 7 by default
-- All checks required: 1 happy, 1+ negative, 1+ boundary
-- Cannot remove items from an approved plan (mark as blocked instead)
-- Evidence and notes required when marking item as done"#.to_string(),
+        description: "Create or update the Plan for this session. Provide plan as YAML with plan_id and items array. See system prompt for full schema (items need: id, description, state, touches, checks with happy/negative/boundary). Evidence and notes required when marking done.".to_string(),
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -557,10 +501,10 @@ mod tests {
     fn test_core_tools_count() {
         let tools = create_core_tools(false);
         // Core tools: shell, background_process, read_file, read_image,
-        // write_file, str_replace, screenshot, coverage, code_search,
+        // write_file, str_replace, code_search,
         // research, research_status, remember, plan_read, plan_write, plan_approve
-        // (16 total - memory is auto-loaded, only remember tool needed)
-        assert_eq!(tools.len(), 16);
+        // (14 total - memory is auto-loaded, only remember tool needed)
+        assert_eq!(tools.len(), 14);
     }
 
     #[test]
@@ -574,15 +518,15 @@ mod tests {
     fn test_create_tool_definitions_core_only() {
         let config = ToolConfig::default();
         let tools = create_tool_definitions(config);
-        assert_eq!(tools.len(), 16);
+        assert_eq!(tools.len(), 14);
     }
 
     #[test]
     fn test_create_tool_definitions_all_enabled() {
         let config = ToolConfig::new(true, true);
         let tools = create_tool_definitions(config);
-        // 16 core + 15 webdriver = 31
-        assert_eq!(tools.len(), 31);
+        // 14 core + 15 webdriver = 29
+        assert_eq!(tools.len(), 29);
     }
 
     #[test]
@@ -600,8 +544,8 @@ mod tests {
         let tools_with_research = create_core_tools(false);
         let tools_without_research = create_core_tools(true);
         
-        assert_eq!(tools_with_research.len(), 16);
-        assert_eq!(tools_without_research.len(), 14);  // research + research_status both excluded
+        assert_eq!(tools_with_research.len(), 14);
+        assert_eq!(tools_without_research.len(), 12);  // research + research_status both excluded
         
         assert!(tools_with_research.iter().any(|t| t.name == "research"));
         assert!(!tools_without_research.iter().any(|t| t.name == "research"));

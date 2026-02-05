@@ -38,8 +38,6 @@ pub async fn dispatch_tool<W: UiWriter>(
         "plan_approve" => plan::execute_plan_approve(tool_call, ctx).await,
 
         // Miscellaneous tools
-        "screenshot" => misc::execute_take_screenshot(tool_call, ctx).await,
-        "coverage" => misc::execute_code_coverage(tool_call, ctx).await,
         "code_search" => misc::execute_code_search(tool_call, ctx).await,
 
         // Research tool
