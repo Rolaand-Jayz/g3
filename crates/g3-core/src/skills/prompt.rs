@@ -24,7 +24,9 @@ pub fn generate_skills_prompt(skills: &[Skill]) -> String {
         xml.push_str("  <skill>\n");
         xml.push_str(&format!("    <name>{}</name>\n", escape_xml(&skill.name)));
         xml.push_str(&format!("    <description>{}</description>\n", escape_xml(&skill.description)));
-        xml.push_str(&format!("    <location>{}</location>\n", escape_xml(&skill.path)));
+        // Don't escape location - it's a path the LLM needs to use with read_file
+        // Embedded paths like <embedded:name>/SKILL.md must remain unescaped
+        xml.push_str(&format!("    <location>{}</location>\n", &skill.path));
         
         // Include compatibility info if present
         if let Some(ref compat) = skill.compatibility {
@@ -136,5 +138,21 @@ mod tests {
         
         assert!(result.contains("# Available Skills"));
         assert!(result.contains("read the full skill file using `read_file`"));
+    }
+
+    #[test]
+    fn test_embedded_skill_path_not_escaped() {
+        // Embedded skill paths use <embedded:name> syntax which must NOT be escaped
+        // so the LLM can use them directly with read_file
+        let skills = vec![
+            make_skill("research", "Web research skill", "<embedded:research>/SKILL.md"),
+        ];
+        
+        let result = generate_skills_prompt(&skills);
+        
+        // The path should appear unescaped
+        assert!(result.contains("<location><embedded:research>/SKILL.md</location>"));
+        // Should NOT be escaped
+        assert!(!result.contains("&lt;embedded:research&gt;"));
     }
 }

@@ -74,17 +74,24 @@ fn calculate_read_limit(file_bytes: usize, total_tokens: u32, used_tokens: u32) 
 /// Recognizes paths like:
 /// - `<embedded:research>/SKILL.md`
 /// - `<embedded:skill-name>/SKILL.md`
+/// - `&lt;embedded:research&gt;/SKILL.md` (XML-escaped fallback)
 ///
 /// Returns the skill content if found, None otherwise.
 fn try_read_embedded_skill(path: &str) -> Option<&'static str> {
     // Check for embedded skill path pattern: <embedded:name>/SKILL.md
-    if !path.starts_with("<embedded:") {
+    // Also handle XML-escaped version: &lt;embedded:name&gt;/SKILL.md
+    let (after_prefix, closing) = if path.starts_with("<embedded:") {
+        // Normal unescaped path
+        (path.strip_prefix("<embedded:")?, ">")
+    } else if path.starts_with("&lt;embedded:") {
+        // XML-escaped path (fallback for older prompts or LLM quirks)
+        (path.strip_prefix("&lt;embedded:")?, "&gt;")
+    } else {
         return None;
-    }
+    };
     
-    // Extract skill name from path like "<embedded:research>/SKILL.md"
-    let after_prefix = path.strip_prefix("<embedded:")?;
-    let skill_name = after_prefix.split('>').next()?;
+    // Extract skill name from path
+    let skill_name = after_prefix.split(closing).next()?;
     
     // Look up the embedded skill
     let skill = get_embedded_skill(skill_name)?;
@@ -898,4 +905,42 @@ pub fn print_imgcat(
     );
     // Blank line before next image (no │ prefix)
     println!();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_try_read_embedded_skill_unescaped() {
+        // Normal unescaped path should work
+        let result = try_read_embedded_skill("<embedded:research>/SKILL.md");
+        assert!(result.is_some(), "Should find embedded research skill");
+        assert!(result.unwrap().contains("name: research"));
+    }
+
+    #[test]
+    fn test_try_read_embedded_skill_escaped() {
+        // XML-escaped path should also work (fallback for LLM quirks)
+        let result = try_read_embedded_skill("&lt;embedded:research&gt;/SKILL.md");
+        assert!(result.is_some(), "Should find embedded research skill with escaped path");
+        assert!(result.unwrap().contains("name: research"));
+    }
+
+    #[test]
+    fn test_try_read_embedded_skill_invalid_name() {
+        // Invalid skill name should return None
+        let result = try_read_embedded_skill("<embedded:nonexistent>/SKILL.md");
+        assert!(result.is_none(), "Should not find nonexistent skill");
+    }
+
+    #[test]
+    fn test_try_read_embedded_skill_not_embedded_path() {
+        // Regular file paths should return None
+        let result = try_read_embedded_skill("/path/to/SKILL.md");
+        assert!(result.is_none(), "Regular path should not match");
+        
+        let result = try_read_embedded_skill("skills/research/SKILL.md");
+        assert!(result.is_none(), "Relative path should not match");
+    }
 }
