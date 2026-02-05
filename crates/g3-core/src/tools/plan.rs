@@ -96,18 +96,30 @@ impl Check {
 pub struct Checks {
     /// Happy path check - normal successful operation
     pub happy: Check,
-    /// Negative case check - error handling, invalid input
-    pub negative: Check,
-    /// Boundary condition check - edge cases, limits
-    pub boundary: Check,
+    /// Negative case checks - error handling, invalid input (at least 1 required)
+    pub negative: Vec<Check>,
+    /// Boundary condition checks - edge cases, limits (at least 1 required)
+    pub boundary: Vec<Check>,
 }
 
 impl Checks {
-    /// Validate all three checks.
+    /// Validate all checks (1 happy, 1+ negative, 1+ boundary).
     pub fn validate(&self) -> Result<()> {
         self.happy.validate().map_err(|e| anyhow!("happy check: {}", e))?;
-        self.negative.validate().map_err(|e| anyhow!("negative check: {}", e))?;
-        self.boundary.validate().map_err(|e| anyhow!("boundary check: {}", e))?;
+        
+        if self.negative.is_empty() {
+            return Err(anyhow!("at least one negative check is required"));
+        }
+        for (i, check) in self.negative.iter().enumerate() {
+            check.validate().map_err(|e| anyhow!("negative check [{}]: {}", i, e))?;
+        }
+        
+        if self.boundary.is_empty() {
+            return Err(anyhow!("at least one boundary check is required"));
+        }
+        for (i, check) in self.boundary.iter().enumerate() {
+            check.validate().map_err(|e| anyhow!("boundary check [{}]: {}", i, e))?;
+        }
         Ok(())
     }
 }
@@ -927,8 +939,8 @@ mod tests {
     fn make_test_checks() -> Checks {
         Checks {
             happy: make_test_check(),
-            negative: make_test_check(),
-            boundary: make_test_check(),
+            negative: vec![make_test_check()],
+            boundary: vec![make_test_check()],
         }
     }
 
@@ -967,6 +979,55 @@ mod tests {
 
         let empty_target = Check::new("desc", "");
         assert!(empty_target.validate().is_err());
+    }
+
+    #[test]
+    fn test_checks_validation_multiple_negative_and_boundary() {
+        // Multiple negative and boundary checks should validate
+        let checks = Checks {
+            happy: make_test_check(),
+            negative: vec![
+                Check::new("Invalid input", "parse::input"),
+                Check::new("Missing file", "io::read"),
+                Check::new("Network error", "net::connect"),
+            ],
+            boundary: vec![
+                Check::new("Empty input", "parse::input"),
+                Check::new("Max size input", "parse::input"),
+            ],
+        };
+        assert!(checks.validate().is_ok());
+    }
+
+    #[test]
+    fn test_checks_validation_empty_negative_fails() {
+        let checks = Checks {
+            happy: make_test_check(),
+            negative: vec![],  // Empty - should fail
+            boundary: vec![make_test_check()],
+        };
+        let err = checks.validate().unwrap_err();
+        assert!(err.to_string().contains("at least one negative check"));
+    }
+
+    #[test]
+    fn test_checks_validation_empty_boundary_fails() {
+        let checks = Checks {
+            happy: make_test_check(),
+            negative: vec![make_test_check()],
+            boundary: vec![],  // Empty - should fail
+        };
+        let err = checks.validate().unwrap_err();
+        assert!(err.to_string().contains("at least one boundary check"));
+    }
+
+    #[test]
+    fn test_checks_validation_single_of_each_passes() {
+        // Minimum case: exactly 1 of each
+        let checks = make_test_checks();
+        assert!(checks.validate().is_ok());
+        assert_eq!(checks.negative.len(), 1);
+        assert_eq!(checks.boundary.len(), 1);
     }
 
     #[test]
