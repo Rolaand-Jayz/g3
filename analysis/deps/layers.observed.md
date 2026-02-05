@@ -1,152 +1,120 @@
-# Observed Layering Structure
+# Observed Layering
 
-**Generated**: 2025-02-02  
-**Method**: Derived from crate dependencies and file import patterns
+**Scope**: Changes in commits `b6d2582..9443f933` (10 commits)
 
-## Crate Layers
+## Layer Structure
 
-Based on dependency direction, the crates form the following layers:
+Observed from dependency direction (higher layers depend on lower):
 
 ```
-Layer 0 (Leaf/Foundation):
-┌─────────────────┬─────────────────┬─────────────────────────┬─────────────────┐
-│   g3-config     │  g3-execution   │  g3-computer-control    │  g3-providers   │
-│  (config mgmt)  │ (code execution)│  (browser/UI control)   │ (LLM providers) │
-└─────────────────┴─────────────────┴─────────────────────────┴─────────────────┘
-                                    │
-                                    ▼
-Layer 1 (Core Engine):
-┌───────────────────────────────────────────────────────────────────────────────┐
-│                               g3-core                                         │
-│  (Agent, ToolCall, context management, tool dispatch, streaming)              │
-└───────────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-Layer 2 (Orchestration):
-┌───────────────────────────────────────────────────────────────────────────────┐
-│                              g3-planner                                       │
-│  (fast-discovery planner, git integration, LLM orchestration)                 │
-└───────────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-Layer 3 (CLI/Application):
-┌───────────────────────────────────────────────────────────────────────────────┐
-│                               g3-cli                                          │
-│  (interactive mode, autonomous mode, agent mode, commands, UI)                │
-└───────────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-Layer 4 (Binary Entry):
-┌───────────────────────────────────────────────────────────────────────────────┐
-│                                 g3                                            │
-│  (main binary, minimal - delegates to g3-cli)                                 │
-└───────────────────────────────────────────────────────────────────────────────┘
-
-Separate:
-┌───────────────────────────────────────────────────────────────────────────────┐
-│                               studio                                          │
-│  (standalone multi-agent workspace manager, no g3 crate dependencies)         │
-└───────────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│  Layer 4: Binaries / Entry Points                           │
+│  ┌─────────────┐  ┌─────────────┐                          │
+│  │  g3-cli     │  │   studio    │                          │
+│  └─────────────┘  └─────────────┘                          │
+└─────────────────────────────────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────────┐
+│  Layer 3: Orchestration                                     │
+│  ┌─────────────┐                                           │
+│  │ g3-planner  │                                           │
+│  └─────────────┘                                           │
+└─────────────────────────────────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────────┐
+│  Layer 2: Core Engine                                       │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │                     g3-core                          │   │
+│  │  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐   │   │
+│  │  │ skills  │ │ tools   │ │ prompts │ │ context │   │   │
+│  │  └─────────┘ └─────────┘ └─────────┘ └─────────┘   │   │
+│  └─────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────────┐
+│  Layer 1: Infrastructure                                    │
+│  ┌─────────────┐ ┌─────────────┐ ┌───────────────────────┐ │
+│  │ g3-config   │ │g3-providers │ │ g3-computer-control   │ │
+│  └─────────────┘ └─────────────┘ └───────────────────────┘ │
+│  ┌─────────────┐                                           │
+│  │g3-execution │                                           │
+│  └─────────────┘                                           │
+└─────────────────────────────────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────────┐
+│  Layer 0: External Assets                                   │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │  skills/research/  (SKILL.md, g3-research script)   │   │
+│  └─────────────────────────────────────────────────────┘   │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │  prompts/system/   (native.md, etc.)                │   │
+│  └─────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────┘
 ```
+
+## Layer Assignments (Changed Files)
+
+| Layer | File | Evidence |
+|-------|------|----------|
+| 4 | g3-cli/src/lib.rs | Entry point, depends on g3-core |
+| 4 | g3-cli/src/agent_mode.rs | Uses g3-core::Agent |
+| 4 | g3-cli/src/interactive.rs | Uses g3-core::Agent |
+| 4 | g3-cli/src/project_files.rs | Uses g3-core::skills, g3-config |
+| 4 | studio/src/main.rs | Binary entry point |
+| 4 | studio/src/sdlc.rs | Orchestrates g3 agents |
+| 2 | g3-core/src/lib.rs | Core library root |
+| 2 | g3-core/src/skills/mod.rs | Skills subsystem |
+| 2 | g3-core/src/skills/parser.rs | SKILL.md parsing |
+| 2 | g3-core/src/skills/discovery.rs | Skill directory scanning |
+| 2 | g3-core/src/skills/prompt.rs | XML prompt generation |
+| 2 | g3-core/src/skills/embedded.rs | Compile-time embedding |
+| 2 | g3-core/src/skills/extraction.rs | Script extraction |
+| 2 | g3-core/src/prompts.rs | System prompt generation |
+| 2 | g3-core/src/tool_definitions.rs | Tool schema definitions |
+| 2 | g3-core/src/tool_dispatch.rs | Tool routing |
+| 1 | g3-config/src/lib.rs | Configuration structs |
+| 0 | skills/research/SKILL.md | External skill definition |
+| 0 | skills/research/g3-research | External skill script |
+| 0 | prompts/system/native.md | System prompt template |
 
 ## Layer Violations
 
-**None detected at crate level.**
+**None detected** in the changed files.
 
-All dependencies flow downward (higher layer → lower layer). No upward dependencies exist.
+All dependencies flow downward (higher layer → lower layer).
 
-## File-Level Layering Within g3-cli
+## Skills Module Internal Layering
 
-```
-Entry Layer:
-  lib.rs (run function, mode dispatch)
-      │
-      ▼
-Mode Layer:
-  interactive.rs, autonomous.rs, agent_mode.rs, accumulative.rs
-      │
-      ▼
-Command/Execution Layer:
-  commands.rs, task_execution.rs, coach_feedback.rs
-      │
-      ▼
-Utility Layer:
-  simple_output.rs, g3_status.rs, display.rs, template.rs,
-  ui_writer_impl.rs, streaming_markdown.rs, filter_json.rs,
-  metrics.rs, project_files.rs, language_prompts.rs, embedded_agents.rs
-      │
-      ▼
-Data Layer:
-  cli_args.rs, project.rs, completion.rs, theme.rs
-```
-
-## File-Level Layering Within g3-core
+Within `g3-core/src/skills/`:
 
 ```
-Entry Layer:
-  lib.rs (Agent struct, stream_completion_with_tools)
-      │
-      ▼
-Orchestration Layer:
-  retry.rs, compaction.rs, feedback_extraction.rs
-      │
-      ▼
-Tool Layer:
-  tool_dispatch.rs, tool_definitions.rs
-  tools/mod.rs → tools/{shell,file_ops,plan,webdriver,research,memory,misc,acd}.rs
-  tools/executor.rs
-      │
-      ▼
-Streaming Layer:
-  streaming.rs, streaming_parser.rs
-      │
-      ▼
-Context Layer:
-  context_window.rs, acd.rs, session.rs, session_continuation.rs
-      │
-      ▼
-Infrastructure Layer:
-  paths.rs, utils.rs, error_handling.rs, stats.rs,
-  provider_config.rs, provider_registration.rs,
-  background_process.rs, pending_research.rs,
-  webdriver_session.rs, ui_writer.rs, project.rs, prompts.rs
-      │
-      ▼
-Search Layer:
-  code_search/mod.rs, code_search/searcher.rs
+┌───────────────────────────────────────┐
+│  mod.rs (coordinator, re-exports)     │  Layer 2.3
+└───────────────────────────────────────┘
+              │
+              ▼
+┌───────────────────────────────────────┐
+│  discovery.rs, prompt.rs, extraction  │  Layer 2.2
+│  (use parser.rs and/or embedded.rs)   │
+└───────────────────────────────────────┘
+              │
+              ▼
+┌───────────────────────────────────────┐
+│  parser.rs, embedded.rs (leaf nodes)  │  Layer 2.1
+│  (no internal dependencies)           │
+└───────────────────────────────────────┘
 ```
 
-## File-Level Layering Within g3-providers
+## Derivation Method
 
-```
-Entry Layer:
-  lib.rs (LLMProvider trait, ProviderRegistry, Message types)
-      │
-      ▼
-Provider Implementations:
-  anthropic.rs, openai.rs, gemini.rs, databricks.rs, mock.rs
-  embedded/mod.rs → embedded/provider.rs, embedded/adapters/{mod,glm}.rs
-      │
-      ▼
-Utility Layer:
-  streaming.rs, oauth.rs
-```
+Layers derived mechanically from:
+1. Cargo.toml `[dependencies]` sections
+2. `use` statement analysis
+3. `mod` declaration hierarchy
+4. `include_str!` compile-time references
 
-## Directionality Confidence
-
-| Layer Boundary | Confidence | Notes |
-|----------------|------------|-------|
-| g3 → g3-cli | High | Single dependency, clear delegation |
-| g3-cli → g3-core | High | Many imports, clear consumer relationship |
-| g3-cli → g3-planner | High | Explicit dependency for planning features |
-| g3-core → g3-providers | High | Core uses provider abstractions |
-| g3-core → g3-config | High | Core reads configuration |
-| g3-core → g3-computer-control | High | WebDriver integration |
-| g3-core → g3-execution | Medium | Declared but minimal observed usage |
-| g3-planner → g3-core | High | Planner uses Agent, error handling |
-
-## Uncertainty
-
-1. **g3-execution usage**: Declared as dependency of g3-core but no `use g3_execution::` statements found in source. May be used transitively or for future features.
-
-2. **studio isolation**: studio has no g3 crate dependencies. It may interact with g3 via filesystem/process boundaries rather than library calls.
+No semantic interpretation applied.
