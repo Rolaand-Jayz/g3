@@ -1,79 +1,101 @@
 # Coupling Hotspots
 
-**Generated**: 2025-02-02  
-**Method**: Fan-in/fan-out analysis from dependency graph
+**Scope**: Changes in commits `b6d2582..9443f933` (10 commits)
 
 ## High Fan-In Files (Most Depended Upon)
 
-These files are imported by many other files. Changes here have wide impact.
+Files that many other files depend on. Changes here have wide impact.
 
-| File | Fan-In | Dependents |
-|------|--------|------------|
-| `g3-core/src/lib.rs` | 18 | streaming_parser, context_window, acd, streaming, stats, retry, feedback_extraction, task_result, tool_dispatch, tools/* |
-| `g3-core/src/ui_writer.rs` | 14 | retry, compaction, feedback_extraction, tool_dispatch, tools/{acd,executor,shell,research,file_ops,plan,memory,misc,webdriver} |
-| `g3-cli/src/simple_output.rs` | 9 | utils, interactive, autonomous, coach_feedback, accumulative, task_execution, commands, agent_mode |
-| `g3-cli/src/template.rs` | 6 | project_files, accumulative, commands, embedded_agents, agent_mode, interactive |
-| `g3-core/src/paths.rs` | 6 | acd, session, context_window, tools/{executor,shell,plan} |
-| `g3-core/src/context_window.rs` | 5 | compaction, stats, streaming, session, task_result |
-| `g3-cli/src/g3_status.rs` | 5 | simple_output, interactive, task_execution, commands |
-| `g3-cli/src/display.rs` | 4 | interactive, ui_writer_impl, agent_mode |
-| `g3-cli/src/ui_writer_impl.rs` | 4 | autonomous, coach_feedback, accumulative, agent_mode |
-| `g3-core/src/utils.rs` | 3 | tools/{shell,file_ops} |
+| File | Fan-In | Dependents | Risk |
+|------|--------|------------|------|
+| `g3-core/src/skills/parser.rs` | 3 | discovery.rs, prompt.rs, mod.rs | Medium |
+| `g3-core/src/skills/embedded.rs` | 3 | discovery.rs, extraction.rs, mod.rs | Medium |
+| `g3-core/src/skills/mod.rs` | 3 | lib.rs, prompts.rs, project_files.rs (cross-crate) | High |
+| `g3-config/src/lib.rs` | 2 | g3-core, g3-cli (cross-crate) | High |
+| `g3-cli/src/project_files.rs` | 2 | lib.rs, agent_mode.rs | Medium |
+
+### Analysis
+
+**`g3-core/src/skills/mod.rs`** (Fan-In: 3, Cross-Crate: Yes)
+- Re-exports `Skill`, `discover_skills`, `generate_skills_prompt`, `EmbeddedSkill`
+- Used by `g3-core/src/lib.rs` (re-export), `g3-core/src/prompts.rs`, `g3-cli/src/project_files.rs`
+- **Evidence**: `pub use parser::Skill`, `pub use discovery::discover_skills`
+- **Impact**: API changes affect both g3-core internals and g3-cli
+
+**`g3-core/src/skills/parser.rs`** (Fan-In: 3, Cross-Crate: No)
+- Defines `Skill` struct used throughout skills module
+- **Evidence**: `use super::parser::Skill` in discovery.rs, prompt.rs
+- **Impact**: Struct field changes ripple through entire skills subsystem
+
+**`g3-config/src/lib.rs`** (Fan-In: 2, Cross-Crate: Yes)
+- Added `SkillsConfig` struct
+- **Evidence**: `use g3_config::SkillsConfig` in project_files.rs
+- **Impact**: Config schema changes affect CLI startup
 
 ## High Fan-Out Files (Most Dependencies)
 
-These files import many other modules. They are integration points.
+Files that depend on many others. Complex, potentially fragile.
 
-| File | Fan-Out | Dependencies |
-|------|---------|-------------|
-| `g3-cli/src/interactive.rs` | 11 | g3-core, completion, commands, display, g3_status, project, project_files, simple_output, input_formatter, template, task_execution, utils |
-| `g3-cli/src/agent_mode.rs` | 11 | g3-core, project_files, display, language_prompts, simple_output, embedded_agents, ui_writer_impl, interactive, template, project, cli_args |
-| `g3-cli/src/accumulative.rs` | 8 | g3-core, autonomous, cli_args, interactive, simple_output, ui_writer_impl, utils, template |
-| `g3-cli/src/commands.rs` | 7 | g3-core, completion, g3_status, simple_output, project, template, task_execution |
-| `g3-core/src/tools/executor.rs` | 7 | g3-config, background_process, pending_research, paths, ui_writer, webdriver_session, lib (ToolCall) |
-| `g3-cli/src/autonomous.rs` | 5 | g3-core, coach_feedback, metrics, simple_output, ui_writer_impl |
-| `g3-core/src/compaction.rs` | 4 | g3-providers, context_window, provider_config, ui_writer |
-| `g3-core/src/tool_dispatch.rs` | 4 | tools/executor, tools/mod, ui_writer, lib (ToolCall) |
-| `g3-cli/src/ui_writer_impl.rs` | 4 | g3-core, filter_json, display, streaming_markdown |
-| `g3-core/src/streaming.rs` | 4 | g3-providers, context_window, streaming_parser, lib (ToolCall) |
+| File | Fan-Out | Dependencies | Risk |
+|------|---------|--------------|------|
+| `g3-core/src/skills/mod.rs` | 5 | parser, discovery, prompt, embedded, extraction | Medium |
+| `g3-core/src/skills/discovery.rs` | 2 | parser.rs, embedded.rs | Low |
+| `g3-cli/src/project_files.rs` | 2 | g3-core::skills, g3-config | Medium |
+| `studio/src/main.rs` | 3 | sdlc.rs, git.rs, session.rs | Low |
 
-## Cross-Crate Coupling Points
+### Analysis
 
-Files that bridge multiple crates:
+**`g3-core/src/skills/mod.rs`** (Fan-Out: 5)
+- Module root that coordinates all skills submodules
+- **Evidence**: `mod parser; mod discovery; mod prompt; mod embedded; pub mod extraction`
+- **Impact**: Central coordination point, but each submodule is relatively independent
 
-| File | Cross-Crate Imports | Crates Touched |
-|------|---------------------|----------------|
-| `g3-core/src/lib.rs` | 2 | g3-config, g3-providers |
-| `g3-core/src/webdriver_session.rs` | 1 | g3-computer-control |
-| `g3-core/src/tools/webdriver.rs` | 1 | g3-computer-control |
-| `g3-core/src/tools/executor.rs` | 1 | g3-config |
-| `g3-core/src/tools/research.rs` | 1 | g3-config |
-| `g3-core/src/provider_registration.rs` | 2 | g3-config, g3-providers |
-| `g3-planner/src/llm.rs` | 3 | g3-config, g3-core, g3-providers |
+**`g3-cli/src/project_files.rs`** (Fan-Out: 2, Cross-Crate: Yes)
+- Bridges g3-core skills and g3-config
+- **Evidence**: `use g3_core::{discover_skills, ...}`, `use g3_config::SkillsConfig`
+- **Impact**: Integration point for skills feature in CLI
 
-## Crate-Level Coupling
+## Cross-Crate Coupling
 
-| Crate | Outgoing Deps | Incoming Deps | Coupling Score |
-|-------|---------------|---------------|----------------|
-| g3-cli | 5 | 1 | High (consumer) |
-| g3-core | 4 | 3 | High (hub) |
-| g3-planner | 3 | 1 | Medium |
-| g3-providers | 0 | 5 | High (foundation) |
-| g3-config | 0 | 5 | High (foundation) |
-| g3-computer-control | 0 | 2 | Low |
-| g3-execution | 0 | 1 | Low |
-| studio | 0 | 0 | Isolated |
+Edges that cross crate boundaries. Higher coordination cost for changes.
 
-## Observations
+| From | To | Type | Evidence |
+|------|----|------|----------|
+| g3-cli/src/project_files.rs | g3-core::skills | use_external | `use g3_core::{discover_skills, generate_skills_prompt, Skill}` |
+| g3-cli/src/project_files.rs | g3-config | use_external | `use g3_config::SkillsConfig` |
+| g3-core/src/lib.rs | g3-core::skills | pub_use | `pub use skills::{Skill, discover_skills, generate_skills_prompt}` |
 
-1. **g3-core/src/lib.rs** is the primary coupling hotspot. It defines `Agent`, `ToolCall`, and other core types used throughout the codebase.
+## Compile-Time Coupling (include_str!)
 
-2. **g3-core/src/ui_writer.rs** defines the `UiWriter` trait used by all tool implementations for output. High fan-in is expected for a trait definition.
+Files embedded at compile time. Build breaks if missing.
 
-3. **g3-cli/src/simple_output.rs** is a utility wrapper used by most CLI modules. High fan-in indicates it's a well-factored common dependency.
+| Source | Embedded File | Evidence |
+|--------|---------------|----------|
+| g3-core/src/skills/embedded.rs | skills/research/SKILL.md | `include_str!("../../../../skills/research/SKILL.md")` |
+| g3-core/src/skills/embedded.rs | skills/research/g3-research | `include_str!("../../../../skills/research/g3-research")` |
 
-4. **g3-cli/src/interactive.rs** and **g3-cli/src/agent_mode.rs** have the highest fan-out, as expected for top-level orchestration modules.
+**Impact**: 
+- Moving or renaming `skills/research/` breaks g3-core compilation
+- Content changes require g3-core recompilation
+- Relative path `../../../../` is fragile to directory restructuring
 
-5. **g3-providers** and **g3-config** are foundation crates with zero outgoing dependencies and high incoming dependencies. This is the expected pattern for leaf crates.
+## Deleted Code Impact
 
-6. **studio** is completely isolated from the g3 crate ecosystem.
+Removed files and their former dependents.
+
+| Deleted File | Lines | Former Dependents |
+|--------------|-------|-------------------|
+| g3-core/src/pending_research.rs | 540 | g3-core/src/lib.rs, tools/research.rs |
+| g3-core/src/tools/research.rs | 710 | tool_dispatch.rs, tools/mod.rs |
+
+**Impact**: 
+- Research functionality moved to external skill
+- `tool_dispatch.rs` and `tools/mod.rs` modified to remove research tool dispatch
+- CLI commands related to research removed from `commands.rs`
+
+## Recommendations for Monitoring
+
+1. **`g3-core/src/skills/mod.rs`**: Watch for API surface changes
+2. **`g3-config/src/lib.rs`**: Watch for `SkillsConfig` schema changes
+3. **`skills/research/`**: Watch for path changes (compile-time dependency)
+4. **`g3-cli/src/project_files.rs`**: Integration point, test after skills changes

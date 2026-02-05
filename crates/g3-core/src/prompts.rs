@@ -263,7 +263,7 @@ mod tests {
         // Verify the include_str! macro successfully loads the file
         let prompt = EMBEDDED_NATIVE_PROMPT;
         assert!(!prompt.is_empty(), "Embedded prompt should not be empty");
-        assert!(prompt.starts_with("# G3 System Prompt"), "Prompt should start with header");
+        assert!(prompt.starts_with("You are G3"), "Prompt should start with agent introduction");
     }
 
     #[test]

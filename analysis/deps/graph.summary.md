@@ -1,105 +1,105 @@
 # Dependency Graph Summary
 
-**Generated**: 2025-02-02  
-**Extraction Method**: Static import parsing via ripgrep  
-**Workspace**: g3
+**Scope**: Changes in commits `b6d2582..9443f933` (10 commits)  
+**Generated**: 2025-02-05
 
 ## Metrics
 
 | Metric | Count |
 |--------|-------|
-| Total Nodes | 127 |
-| Crate Nodes | 9 |
-| File Nodes | 118 |
-| Total Edges | 156 |
-| Crate-level Edges | 14 |
-| File-level Edges | 142 |
+| Crates (total) | 8 |
+| Crates (changed) | 4 |
+| Files (changed) | 29 |
+| Files (added) | 8 |
+| Files (deleted) | 2 |
+| Files (modified) | 19 |
+| Crate-level edges | 12 |
+| File-level edges | 21 |
 
-## Crate Dependency Structure
+## Changed Crates
 
-```
-g3 (root binary)
-├── g3-cli
-│   ├── g3-core
-│   ├── g3-config
-│   ├── g3-planner
-│   ├── g3-computer-control
-│   └── g3-providers
-├── g3-providers
-
-g3-core
-├── g3-providers
-├── g3-config
-├── g3-execution
-└── g3-computer-control
-
-g3-planner
-├── g3-providers
-├── g3-core
-└── g3-config
-
-studio (standalone binary)
-└── (no internal g3 dependencies)
-
-g3-config (leaf - no internal deps)
-g3-execution (leaf - no internal deps)
-g3-computer-control (leaf - no internal deps)
-g3-providers (leaf - no internal deps)
-```
+| Crate | Path | Role |
+|-------|------|------|
+| g3-core | crates/g3-core | Core engine, skills module added |
+| g3-cli | crates/g3-cli | CLI interface, skills integration |
+| g3-config | crates/g3-config | Configuration, SkillsConfig added |
+| studio | crates/studio | Multi-agent workspace, SDLC changes |
 
 ## Entrypoints
 
-| Entrypoint | Path | Type |
-|------------|------|------|
-| g3 | `src/main.rs` | Binary |
-| studio | `crates/studio/src/main.rs` | Binary |
-| g3-cli | `crates/g3-cli/src/lib.rs` | Library |
+| Entrypoint | Type | Evidence |
+|------------|------|----------|
+| g3-cli/src/lib.rs | Library root | `pub fn run()` |
+| studio/src/main.rs | Binary | `fn main()` |
+| g3-core/src/lib.rs | Library root | Re-exports skills module |
 
-## Top Fan-In Nodes (Most Depended Upon)
+## Top Fan-In Nodes (most depended upon)
 
-| Node | Fan-In | Description |
-|------|--------|-------------|
-| `g3-core/src/lib.rs` | 18 | Core Agent, ToolCall types |
-| `g3-core/src/ui_writer.rs` | 14 | UiWriter trait |
-| `g3-cli/src/simple_output.rs` | 9 | SimpleOutput helper |
-| `g3-cli/src/template.rs` | 6 | Template processing |
-| `g3-core/src/paths.rs` | 6 | Path utilities |
-| `g3-core/src/context_window.rs` | 5 | Context window management |
-| `g3-cli/src/g3_status.rs` | 5 | Status formatting |
-| `crate:g3-providers` | 5 | Provider abstractions |
-| `crate:g3-config` | 5 | Configuration |
-| `crate:g3-core` | 5 | Core engine |
+| Node | Fan-In | Dependents |
+|------|--------|------------|
+| g3-core/src/skills/parser.rs | 3 | discovery.rs, prompt.rs, mod.rs |
+| g3-core/src/skills/embedded.rs | 3 | discovery.rs, extraction.rs, mod.rs |
+| g3-core/src/skills/mod.rs | 3 | lib.rs, prompts.rs, project_files.rs |
+| g3-config/src/lib.rs | 2 | g3-core (crate), g3-cli (crate) |
+| g3-cli/src/project_files.rs | 2 | lib.rs, agent_mode.rs |
 
-## Top Fan-Out Nodes (Most Dependencies)
+## Top Fan-Out Nodes (most dependencies)
 
-| Node | Fan-Out | Description |
+| Node | Fan-Out | Dependencies |
 |------|---------|-------------|
-| `g3-cli/src/interactive.rs` | 11 | Interactive REPL |
-| `g3-cli/src/agent_mode.rs` | 11 | Agent mode runner |
-| `g3-cli/src/accumulative.rs` | 8 | Accumulative mode |
-| `g3-cli/src/commands.rs` | 7 | CLI commands |
-| `g3-core/src/tools/executor.rs` | 7 | Tool execution context |
-| `g3-cli/src/autonomous.rs` | 5 | Autonomous mode |
-| `g3-core/src/compaction.rs` | 4 | Context compaction |
-| `g3-core/src/tool_dispatch.rs` | 4 | Tool routing |
+| g3-cli (crate) | 5 | g3-core, g3-config, g3-providers, g3-planner, g3-computer-control |
+| g3-core/src/skills/mod.rs | 5 | parser.rs, discovery.rs, prompt.rs, embedded.rs, extraction.rs |
+| g3-core/src/skills/discovery.rs | 2 | parser.rs, embedded.rs |
+| g3-cli/src/project_files.rs | 2 | g3-core::skills, g3-config::SkillsConfig |
+| studio/src/main.rs | 3 | sdlc.rs, git.rs, session.rs |
 
-## Crate File Counts
+## Major Structural Changes
 
-| Crate | Source Files | Test Files |
-|-------|--------------|------------|
-| g3-cli | 21 | 5 |
-| g3-core | 32 | 33 |
-| g3-providers | 12 | 4 |
-| g3-planner | 7 | 4 |
-| g3-computer-control | 12 | 1 |
-| g3-config | 2 | 0 |
-| g3-execution | 1 | 0 |
-| studio | 3 | 0 |
+### Added: Skills Module (`g3-core/src/skills/`)
+
+New module implementing Agent Skills specification:
+
+```
+g3-core/src/skills/
+├── mod.rs        # Module root, re-exports
+├── parser.rs     # SKILL.md YAML frontmatter parser
+├── discovery.rs  # Skill directory scanning
+├── prompt.rs     # XML prompt generation
+├── embedded.rs   # Compile-time embedded skills
+└── extraction.rs # Script extraction to .g3/bin/
+```
+
+**Internal dependency flow**:
+```
+mod.rs
+  ├── parser.rs (Skill struct)
+  ├── discovery.rs → parser.rs, embedded.rs
+  ├── prompt.rs → parser.rs
+  ├── embedded.rs (standalone)
+  └── extraction.rs → embedded.rs
+```
+
+### Removed: Research Tool (hardcoded)
+
+- `g3-core/src/pending_research.rs` (540 lines deleted)
+- `g3-core/src/tools/research.rs` (710 lines deleted)
+
+### Added: Research Skill (external)
+
+- `skills/research/SKILL.md` (144 lines)
+- `skills/research/g3-research` (338 lines, bash script)
+
+Research functionality moved from hardcoded tool to external skill.
+
+### Modified: SDLC Pipeline
+
+- State storage moved from `analysis/sdlc/` to `.g3/sdlc/`
+- Added merge-to-main on successful completion
+- Worktree preserved on failure for debugging
 
 ## Extraction Limitations
 
-1. **Dynamic imports not captured**: Any runtime module loading is not reflected
-2. **Macro-generated imports**: Imports generated by macros may be missed
-3. **Conditional compilation**: `#[cfg(...)]` gated imports are included regardless of target
-4. **Re-exports**: Transitive re-exports through `pub use` are not fully traced
-5. **Test files excluded from graph**: Test files (`tests/`) are not included in file nodes
+- Dynamic imports not detected (none expected in Rust)
+- Test-only dependencies not distinguished from production
+- Conditional compilation (`#[cfg(...)]`) not analyzed
+- External crate dependencies (from crates.io) not enumerated

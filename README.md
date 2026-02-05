@@ -114,9 +114,11 @@ These commands give you fine-grained control over context management, allowing y
 g3 supports the [Agent Skills](https://agentskills.io) specification - an open format for portable skill packages that give the agent new capabilities.
 
 **Skill Locations** (in priority order, later overrides earlier):
-1. Global: `~/.g3/skills/`
-2. Extra paths from config
-3. Workspace: `.g3/skills/` (highest priority)
+1. Embedded skills (compiled into binary)
+2. Global: `~/.g3/skills/`
+3. Extra paths from config
+4. Workspace: `.g3/skills/`
+5. Repo: `skills/` (highest priority, checked into git)
 
 **SKILL.md Format**:
 ```yaml
@@ -145,6 +147,12 @@ Each skill adds ~50-100 tokens to context (name + description + path). Skills ca
 - `scripts/` - Executable code (Python, Bash, etc.)
 - `references/` - Additional documentation
 - `assets/` - Templates, data files
+
+**Embedded Skills**: Core skills like `research` are compiled into the binary, ensuring they work anywhere without external files. Embedded scripts are automatically extracted to `.g3/bin/` on first use.
+
+**Built-in Research Skill**: Perform asynchronous web research via `background_process("research", ".g3/bin/g3-research 'your query'")`. Results are saved to `.g3/research/<id>/report.md`.
+
+See [Skills Guide](docs/skills.md) for detailed documentation.
 
 ### Provider Flexibility
 - Support for multiple LLM providers through a unified interface
@@ -483,6 +491,7 @@ Detailed documentation is available in the `docs/` directory:
 | [Tools Reference](docs/tools.md) | Complete reference for all available tools |
 | [Providers Guide](docs/providers.md) | LLM provider setup and selection guide |
 | [Control Commands](docs/CONTROL_COMMANDS.md) | Interactive `/` commands for context management |
+| [Skills Guide](docs/skills.md) | Agent Skills system, SKILL.md format, creating skills |
 | [Code Search](docs/CODE_SEARCH.md) | Tree-sitter code search query patterns |
 
 For AI agents working with this codebase, see [AGENTS.md](AGENTS.md).
