@@ -101,12 +101,44 @@ EOF
 # Returns:
 #   Report content between markers, or empty if not found
 #######################################
+strip_ansi() {
+    # Comprehensive ANSI escape sequence stripping
+    perl -pe 's/\e\[[0-9;]*[a-zA-Z]//g; s/\e\][^\a]*\a//g; s/\e[()][AB012]//g'
+}
+
 extract_report() {
     local output_file="$1"
+    local report
     
     # Use sed to extract content between markers
-    sed -n "/${REPORT_START_MARKER}/,/${REPORT_END_MARKER}/p" "$output_file" | \
-        sed "1d;\$d"  # Remove first and last lines (the markers)
+    report=$(sed -n "/${REPORT_START_MARKER}/,/${REPORT_END_MARKER}/p" "$output_file" | \
+        sed "1d;\$d" | \
+        strip_ansi)  # Remove markers and strip ANSI codes
+    
+    if [[ -n "$report" ]]; then
+        echo "$report"
+        return 0
+    fi
+    
+    # Fallback: if no markers found, try to extract useful content from raw output
+    # Strip ANSI escape codes and g3 UI elements
+    report=$(cat "$output_file" | \
+        strip_ansi | \
+        grep -v '^🆕 Starting new session' | \
+        grep -v '^>> agent mode' | \
+        grep -v '^\[38;' | \
+        grep -v '^-> ~' | \
+        grep -v '^ *✓' | \
+        grep -v '^📝 Auto-memory:' | \
+        grep -v 'Auto-memory:' | \
+        grep -v '^$' | \
+        sed '/^[[:space:]]*$/d' | \
+        head -500)
+    
+    if [[ -n "$report" ]]; then
+        echo "$report"
+        return 0
+    fi
 }
 
 #######################################
