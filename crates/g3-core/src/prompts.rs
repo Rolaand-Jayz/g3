@@ -116,6 +116,7 @@ write_file(\"helper.rs\", \"...\")
 // ============================================================================
 
 use crate::skills::{Skill, generate_skills_prompt};
+use crate::toolsets::generate_toolsets_prompt;
 
 /// System prompt for providers with native tool calling (Anthropic, OpenAI, etc.)
 /// Uses include_str! to embed the prompt at compile time.
@@ -126,11 +127,21 @@ pub fn get_system_prompt_for_native() -> String {
 /// System prompt for providers with native tool calling, with skills support.
 pub fn get_system_prompt_for_native_with_skills(skills: &[Skill]) -> String {
     let skills_section = generate_skills_prompt(skills);
-    if skills_section.is_empty() {
-        EMBEDDED_NATIVE_PROMPT.to_string()
-    } else {
-        format!("{}\n\n{}", EMBEDDED_NATIVE_PROMPT, skills_section)
+    let toolsets_section = generate_toolsets_prompt();
+    
+    let mut prompt = EMBEDDED_NATIVE_PROMPT.to_string();
+    
+    // Add toolsets section (available toolsets for dynamic loading)
+    if !toolsets_section.is_empty() {
+        prompt = format!("{}\n\n{}", prompt, toolsets_section);
     }
+    
+    // Add skills section
+    if !skills_section.is_empty() {
+        prompt = format!("{}\n\n{}", prompt, skills_section);
+    }
+    
+    prompt
 }
 
 /// System prompt for providers without native tool calling (embedded models)

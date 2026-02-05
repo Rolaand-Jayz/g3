@@ -10,15 +10,13 @@ use serde_json::json;
 /// Configuration for which optional tool sets to enable
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ToolConfig {
-    pub webdriver: bool,
     pub computer_control: bool,
     pub exclude_research: bool,
 }
 
 impl ToolConfig {
-    pub fn new(webdriver: bool, computer_control: bool) -> Self {
+    pub fn new(computer_control: bool) -> Self {
         Self {
-            webdriver,
             computer_control,
             exclude_research: false,
         }
@@ -37,13 +35,8 @@ impl ToolConfig {
 /// Returns a vector of Tool definitions that describe the available tools
 /// and their input schemas.
 pub fn create_tool_definitions(config: ToolConfig) -> Vec<Tool> {
-    let mut tools = create_core_tools(config.exclude_research);
-
-    if config.webdriver {
-        tools.extend(create_webdriver_tools());
-    }
-
-    tools
+    // Webdriver tools are now JIT-loaded via load_toolset("webdriver")
+    create_core_tools(config.exclude_research)
 }
 
 /// Create the core tools that are always available
@@ -301,200 +294,23 @@ fn create_core_tools(exclude_research: bool) -> Vec<Tool> {
         });
     }
 
-    tools
-}
+    // Toolset loading tool - allows dynamic loading of additional tools
+    tools.push(Tool {
+        name: "load_toolset".to_string(),
+        description: "Load additional tools from a named toolset. Returns the tool definitions so you learn how to use them. Use this when you need specialized tools like browser automation.".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "The name of the toolset to load (e.g., 'webdriver')"
+                }
+            },
+            "required": ["name"]
+        }),
+    });
 
-/// Create WebDriver browser automation tools
-fn create_webdriver_tools() -> Vec<Tool> {
-    vec![
-        Tool {
-            name: "webdriver_start".to_string(),
-            description: "Start a Safari WebDriver session for browser automation. Must be called before any other webdriver tools. Requires Safari's 'Allow Remote Automation' to be enabled in Develop menu.".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {},
-                "required": []
-            }),
-        },
-        Tool {
-            name: "webdriver_navigate".to_string(),
-            description: "Navigate to a URL in the browser".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "url": {
-                        "type": "string",
-                        "description": "The URL to navigate to (must include protocol, e.g., https://)"
-                    }
-                },
-                "required": ["url"]
-            }),
-        },
-        Tool {
-            name: "webdriver_get_url".to_string(),
-            description: "Get the current URL of the browser".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {},
-                "required": []
-            }),
-        },
-        Tool {
-            name: "webdriver_get_title".to_string(),
-            description: "Get the title of the current page".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {},
-                "required": []
-            }),
-        },
-        Tool {
-            name: "webdriver_find_element".to_string(),
-            description: "Find an element on the page by CSS selector and return its text content".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "selector": {
-                        "type": "string",
-                        "description": "CSS selector to find the element (e.g., 'h1', '.class-name', '#id')"
-                    }
-                },
-                "required": ["selector"]
-            }),
-        },
-        Tool {
-            name: "webdriver_find_elements".to_string(),
-            description: "Find all elements matching a CSS selector and return their text content".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "selector": {
-                        "type": "string",
-                        "description": "CSS selector to find elements"
-                    }
-                },
-                "required": ["selector"]
-            }),
-        },
-        Tool {
-            name: "webdriver_click".to_string(),
-            description: "Click an element on the page".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "selector": {
-                        "type": "string",
-                        "description": "CSS selector for the element to click"
-                    }
-                },
-                "required": ["selector"]
-            }),
-        },
-        Tool {
-            name: "webdriver_send_keys".to_string(),
-            description: "Type text into an input element".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "selector": {
-                        "type": "string",
-                        "description": "CSS selector for the input element"
-                    },
-                    "text": {
-                        "type": "string",
-                        "description": "Text to type into the element"
-                    },
-                    "clear_first": {
-                        "type": "boolean",
-                        "description": "Whether to clear the element before typing (default: true)"
-                    }
-                },
-                "required": ["selector", "text"]
-            }),
-        },
-        Tool {
-            name: "webdriver_execute_script".to_string(),
-            description: "Execute JavaScript code in the browser and return the result".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "script": {
-                        "type": "string",
-                        "description": "JavaScript code to execute (use 'return' to return a value)"
-                    }
-                },
-                "required": ["script"]
-            }),
-        },
-        Tool {
-            name: "webdriver_get_page_source".to_string(),
-            description: "Get the rendered HTML source of the current page. Returns the current DOM state after JavaScript execution.".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "max_length": {
-                        "type": "integer",
-                        "description": "Maximum length of HTML to return (default: 10000, use 0 for no truncation)"
-                    },
-                    "save_to_file": {
-                        "type": "string",
-                        "description": "Optional file path to save the HTML instead of returning it inline"
-                    }
-                },
-                "required": []
-            }),
-        },
-        Tool {
-            name: "webdriver_screenshot".to_string(),
-            description: "Take a screenshot of the browser window".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Path where to save the screenshot (e.g., '/tmp/screenshot.png')"
-                    }
-                },
-                "required": ["path"]
-            }),
-        },
-        Tool {
-            name: "webdriver_back".to_string(),
-            description: "Navigate back in browser history".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {},
-                "required": []
-            }),
-        },
-        Tool {
-            name: "webdriver_forward".to_string(),
-            description: "Navigate forward in browser history".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {},
-                "required": []
-            }),
-        },
-        Tool {
-            name: "webdriver_refresh".to_string(),
-            description: "Refresh the current page".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {},
-                "required": []
-            }),
-        },
-        Tool {
-            name: "webdriver_quit".to_string(),
-            description: "Close the browser and end the WebDriver session".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {},
-                "required": []
-            }),
-        },
-    ]
+    tools
 }
 
 #[cfg(test)]
@@ -506,15 +322,8 @@ mod tests {
         let tools = create_core_tools(false);
         // Core tools (with research): shell, background_process, read_file, read_image,
         // write_file, str_replace, code_search, plan_read, plan_write, plan_approve,
-        // remember, rehydrate, research, research_status
-        // (14 total)
-        assert_eq!(tools.len(), 14);
-    }
-
-    #[test]
-    fn test_webdriver_tools_count() {
-        let tools = create_webdriver_tools();
-        // 15 webdriver tools
+        // remember, rehydrate, research, research_status, load_toolset
+        // (15 total)
         assert_eq!(tools.len(), 15);
     }
 
@@ -522,15 +331,16 @@ mod tests {
     fn test_create_tool_definitions_core_only() {
         let config = ToolConfig::default();
         let tools = create_tool_definitions(config);
-        assert_eq!(tools.len(), 14);
+        // 15 core tools (webdriver is now JIT-loaded)
+        assert_eq!(tools.len(), 15);
     }
 
     #[test]
-    fn test_create_tool_definitions_all_enabled() {
-        let config = ToolConfig::new(true, true);
+    fn test_create_tool_definitions() {
+        let config = ToolConfig::new(true);
         let tools = create_tool_definitions(config);
-        // 14 core + 15 webdriver = 29
-        assert_eq!(tools.len(), 29);
+        // Webdriver tools are now JIT-loaded, so only core tools are included
+        assert!(tools.len() >= 14); // At least 14 core tools
     }
 
     #[test]

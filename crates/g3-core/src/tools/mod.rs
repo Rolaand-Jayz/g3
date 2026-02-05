@@ -19,6 +19,7 @@ pub mod misc;
 pub mod plan;
 pub mod research;
 pub mod shell;
+pub mod toolsets;
 pub mod webdriver;
 
 pub use executor::ToolExecutor;

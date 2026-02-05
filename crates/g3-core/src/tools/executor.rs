@@ -1,6 +1,7 @@
 //! Tool executor trait and context for tool execution.
 
 use anyhow::Result;
+use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -29,6 +30,8 @@ pub struct ToolContext<'a, W: UiWriter> {
     pub requirements_sha: Option<&'a str>,
     pub context_total_tokens: u32,
     pub context_used_tokens: u32,
+    /// Set of toolset names that have been loaded in this session
+    pub loaded_toolsets: &'a mut HashSet<String>,
 }
 
 impl<'a, W: UiWriter> ToolContext<'a, W> {

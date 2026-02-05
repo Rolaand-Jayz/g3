@@ -24,6 +24,7 @@ pub mod ui_writer;
 pub mod utils;
 pub mod webdriver_session;
 pub mod skills;
+pub mod toolsets;
 
 pub use feedback_extraction::{
     extract_coach_feedback, ExtractedFeedback, FeedbackExtractionConfig, FeedbackSource,
@@ -163,6 +164,8 @@ pub struct Agent<W: UiWriter> {
     in_plan_mode: bool,
     /// Manager for async research tasks
     pending_research_manager: pending_research::PendingResearchManager,
+    /// Set of toolset names that have been loaded in this session
+    loaded_toolsets: std::collections::HashSet<String>,
 }
 
 impl<W: UiWriter> Agent<W> {
@@ -218,6 +221,7 @@ impl<W: UiWriter> Agent<W> {
             acd_enabled: false,
             in_plan_mode: false,
             pending_research_manager: pending_research::PendingResearchManager::new(),
+            loaded_toolsets: std::collections::HashSet::new(),
         }
     }
 
@@ -612,6 +616,26 @@ impl<W: UiWriter> Agent<W> {
     /// Resolve the temperature to use for a given provider, applying fallbacks.
     fn resolve_temperature(&self, provider_name: &str) -> f32 {
         provider_config::resolve_temperature(&self.config, provider_name)
+    }
+
+    /// Get tool definitions including any dynamically loaded toolsets.
+    fn get_tool_definitions_with_loaded_toolsets(&self, tool_config: tool_definitions::ToolConfig) -> Vec<g3_providers::Tool> {
+        let mut tools = tool_definitions::create_tool_definitions(tool_config);
+        
+        // Add tools from loaded toolsets
+        for toolset_name in &self.loaded_toolsets {
+            if let Ok(toolset) = toolsets::get_toolset(toolset_name) {
+                let toolset_tools = toolset.get_tools();
+                // Avoid duplicates (in case toolset was already in base config)
+                for tool in toolset_tools {
+                    if !tools.iter().any(|t| t.name == tool.name) {
+                        tools.push(tool);
+                    }
+                }
+            }
+        }
+        
+        tools
     }
 
     /// Print provider diagnostics through the UiWriter for visibility
@@ -1016,10 +1040,9 @@ impl<W: UiWriter> Agent<W> {
         let _supports_cache_control = provider.supports_cache_control();
         let tools = if provider.has_native_tool_calling() {
             let tool_config = tool_definitions::ToolConfig::new(
-                self.config.webdriver.enabled,
                 self.config.computer_control.enabled,
             );
-            Some(tool_definitions::create_tool_definitions(tool_config))
+            Some(self.get_tool_definitions_with_loaded_toolsets(tool_config))
         } else {
             None
         };
@@ -1887,10 +1910,9 @@ Skip if nothing new. Be brief."#;
         let provider_name = provider.name().to_string();
         let tools = if provider.has_native_tool_calling() {
             let tool_config = tool_definitions::ToolConfig::new(
-                self.config.webdriver.enabled,
                 self.config.computer_control.enabled,
             );
-            Some(tool_definitions::create_tool_definitions(tool_config))
+            Some(self.get_tool_definitions_with_loaded_toolsets(tool_config))
         } else {
             None
         };
@@ -2569,11 +2591,10 @@ Skip if nothing new. Be brief."#;
                             let provider_for_tools = self.providers.get(None)?;
                             if provider_for_tools.has_native_tool_calling() {
                                 let tool_config = tool_definitions::ToolConfig::new(
-                                    self.config.webdriver.enabled,
                                     self.config.computer_control.enabled,
                                 );
                                 request.tools =
-                                    Some(tool_definitions::create_tool_definitions(tool_config));
+                                    Some(self.get_tool_definitions_with_loaded_toolsets(tool_config));
                             }
 
                             // DO NOT add final_display_content to full_response here!
@@ -2981,6 +3002,7 @@ Skip if nothing new. Be brief."#;
             requirements_sha: self.requirements_sha.as_deref(),
             context_total_tokens: self.context_window.total_tokens,
             context_used_tokens: self.context_window.used_tokens,
+            loaded_toolsets: &mut self.loaded_toolsets,
         };
 
         // Dispatch to the appropriate tool handler

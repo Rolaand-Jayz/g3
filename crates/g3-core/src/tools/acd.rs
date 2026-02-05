@@ -137,6 +137,7 @@ mod tests {
         pending_images: Vec<g3_providers::ImageContent>,
         pending_research_manager: PendingResearchManager,
         config: g3_config::Config,
+        loaded_toolsets: std::collections::HashSet<String>,
     }
 
     impl TestContext {
@@ -150,6 +151,7 @@ mod tests {
                 pending_images: Vec::new(),
                 pending_research_manager: PendingResearchManager::new(),
                 config: g3_config::Config::default(),
+                loaded_toolsets: std::collections::HashSet::new(),
             }
         }
     }
@@ -173,6 +175,7 @@ mod tests {
             requirements_sha: None,
             context_total_tokens: 100000,
             context_used_tokens: 10000,
+            loaded_toolsets: &mut test_ctx.loaded_toolsets,
         };
 
         let tool_call = ToolCall {
@@ -204,6 +207,7 @@ mod tests {
             requirements_sha: None,
             context_total_tokens: 100000,
             context_used_tokens: 10000,
+            loaded_toolsets: &mut test_ctx.loaded_toolsets,
         };
 
         let tool_call = ToolCall {
@@ -235,6 +239,7 @@ mod tests {
             requirements_sha: None,
             context_total_tokens: 100000,
             context_used_tokens: 10000,
+            loaded_toolsets: &mut test_ctx.loaded_toolsets,
         };
 
         let tool_call = ToolCall {
