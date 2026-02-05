@@ -1,6 +1,7 @@
 use crate::filter_json::{filter_json_tool_calls, reset_json_tool_state, ToolParsingHint};
 use crate::display::{shorten_path, shorten_paths_in_command};
 use crate::streaming_markdown::StreamingMarkdownFormatter;
+use crate::terminal_width::{get_terminal_width, clip_line, compress_path, compress_command};
 use g3_core::ui_writer::UiWriter;
 use std::io::{self, Write};
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, AtomicU8, Ordering}};
@@ -316,6 +317,10 @@ impl UiWriter for ConsoleUiWriter {
         } else {
             TOOL_COLOR_NORMAL_BOLD
         };
+
+        // Get terminal width for responsive formatting
+        let term_width = get_terminal_width();
+
         if let Some(tool_name) = self.current_tool_name.lock().unwrap().as_ref() {
             let args = self.current_tool_args.lock().unwrap();
 
@@ -341,17 +346,19 @@ impl UiWriter for ConsoleUiWriter {
                 // Shorten paths in the value (handles both file paths and shell commands)
                 let shortened = shorten_paths_in_command(first_line, workspace_ref, project_ref);
 
-                // Truncate long values for display (after shortening)
-                let display_value = if shortened.chars().count() > 80 {
-                    // Use char_indices to safely truncate at character boundary
-                    let truncate_at = shortened
-                        .char_indices()
-                        .nth(77)
-                        .map(|(i, _)| i)
-                        .unwrap_or(shortened.len());
-                    format!("{}...", &shortened[..truncate_at])
+                // Calculate available width for the value
+                // Header format: "┌─<tool_color> <tool_name><reset><magenta> | <value><suffix><reset>"
+                // Prefix overhead: "┌─" (2) + tool_name + " | " (3) = 5 + tool_name.len()
+                // For shell: " ●  <tool_name>  | " = ~17 chars overhead
+                let is_shell_tool = tool_name == "shell";
+                let prefix_overhead = if is_shell_tool { 17 } else { 5 + tool_name.len() };
+                let available_for_value = term_width.saturating_sub(prefix_overhead);
+
+                // Compress path or command to fit available width
+                let display_value = if is_shell_tool || tool_name == "background_process" {
+                    compress_command(&shortened, available_for_value)
                 } else {
-                    shortened
+                    compress_path(&shortened, available_for_value)
                 };
 
                 // Add range information for read_file tool calls
@@ -404,12 +411,13 @@ impl UiWriter for ConsoleUiWriter {
     }
 
     fn update_tool_output_line(&self, line: &str) {
-        // Truncate long lines to prevent terminal wrapping issues
-        // When lines wrap, the cursor-up escape code only moves up one visual line
-        const MAX_LINE_WIDTH: usize = 120;
+        // Get terminal width and calculate available space for content
+        // Prefix is "│ " (3 chars) for normal tools or "   └─ " (6 chars) for shell
         let mut current_line = self.current_output_line.lock().unwrap();
         let mut line_printed = self.output_line_printed.lock().unwrap();
         let is_shell = *self.is_shell_compact.lock().unwrap();
+        let prefix_width = if is_shell { 6 } else { 3 };
+        let max_content_width = get_terminal_width().saturating_sub(prefix_width);
 
         // If we've already printed a line, clear it first
         if *line_printed {
@@ -422,13 +430,8 @@ impl UiWriter for ConsoleUiWriter {
             }
         }
 
-        // Truncate line if needed to prevent wrapping
-        let display_line = if line.chars().count() > MAX_LINE_WIDTH {
-            let truncated: String = line.chars().take(MAX_LINE_WIDTH - 3).collect();
-            format!("{}...", truncated)
-        } else {
-            line.to_string()
-        };
+        // Clip line to fit terminal width
+        let display_line = clip_line(line, max_content_width);
 
         // Use different prefix for shell (└─) vs other tools (│)
         if is_shell {
@@ -449,7 +452,9 @@ impl UiWriter for ConsoleUiWriter {
         if line.starts_with("📝 TODO list:") {
             return;
         }
-        println!("│ \x1b[2m{}\x1b[0m", line);
+        // Clip line to fit terminal width (prefix "│ " is 3 chars)
+        let max_content_width = get_terminal_width().saturating_sub(3);
+        println!("│ \x1b[2m{}\x1b[0m", clip_line(line, max_content_width));
     }
 
     fn print_tool_output_summary(&self, count: usize) {
@@ -490,6 +495,9 @@ impl UiWriter for ConsoleUiWriter {
         let args = self.current_tool_args.lock().unwrap();
         let is_agent_mode = self.hint_state.is_agent_mode.load(Ordering::Relaxed);
 
+        // Get terminal width for responsive formatting
+        let term_width = get_terminal_width();
+
         // Get file path (for file operation tools)
         let file_path = args
             .iter()
@@ -511,13 +519,11 @@ impl UiWriter for ConsoleUiWriter {
                         if let Some(first_search) = searches.as_array().and_then(|arr| arr.first()) {
                             let lang = first_search.get("language").and_then(|v| v.as_str()).unwrap_or("?");
                             let name = first_search.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                            // Truncate name if too long
-                            let display_name = if name.len() > 30 {
-                                let truncate_at = name.char_indices().nth(27).map(|(i, _)| i).unwrap_or(name.len());
-                                format!("{}...", &name[..truncate_at])
-                            } else {
-                                name.to_string()
-                            };
+                            // Calculate available width for search name
+                            // Format: " ● code_search | lang:"name" | summary | tokens ◉ time"
+                            // Fixed overhead: ~50 chars + lang (~10) = ~60
+                            let available_for_name = term_width.saturating_sub(60);
+                            let display_name = clip_line(name, available_for_name);
                             format!("{}:\"{}\"", lang, display_name)
                         } else {
                             String::new()
@@ -538,17 +544,14 @@ impl UiWriter for ConsoleUiWriter {
             let project_info = self.get_project_info();
             let project_ref = project_info.as_ref().map(|(p, n)| (p.as_path(), n.as_str()));
             let shortened = shorten_path(file_path, workspace.as_deref(), project_ref);
-            
-            if shortened.chars().count() > 60 {
-                let truncate_at = shortened
-                    .char_indices()
-                    .nth(57)
-                    .map(|(i, _)| i)
-                    .unwrap_or(shortened.len());
-                format!("{}...", &shortened[..truncate_at])
-            } else {
-                shortened
-            }
+
+            // Calculate available width for path
+            // Format: " ● tool_name   | path [range] | summary | tokens ◉ time"
+            // Fixed overhead: " ● " (3) + tool_name padded (11) + " | " (3) + " | " (3) + summary (~15) + " | " (3) + tokens+time (~15) = ~53
+            // Plus range_suffix length (variable, ~10-15 chars if present)
+            let fixed_overhead = 53;
+            let available_for_path = term_width.saturating_sub(fixed_overhead);
+            compress_path(&shortened, available_for_path)
         };
 
         // Build range suffix for read_file

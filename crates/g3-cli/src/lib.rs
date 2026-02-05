@@ -24,6 +24,7 @@ mod template;
 mod completion;
 mod project;
 mod input_formatter;
+mod terminal_width;
 
 use anyhow::Result;
 use std::path::PathBuf;

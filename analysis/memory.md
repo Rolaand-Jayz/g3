@@ -1,5 +1,5 @@
 # Workspace Memory
-> Updated: 2026-02-05T14:30:00Z | Size: ~19k chars
+> Updated: 2026-02-05T09:15:01Z | Size: 17.9k chars
 
 ### Remember Tool Wiring
 - `crates/g3-core/src/tools/memory.rs` [0..5000] - `execute_remember()`, `get_memory_path()`, `merge_memory()`
@@ -323,3 +323,18 @@ Orchestrates 7 agents in sequence for codebase maintenance.
 
 **State**: `.g3/sdlc/pipeline.json`
 **CLI**: `studio sdlc run [-c N]`, `studio sdlc status`, `studio sdlc reset`
+
+### Terminal Width Responsive Output
+Makes tool output responsive to terminal width - no line wrapping, with 4-char right margin.
+
+- `crates/g3-cli/src/terminal_width.rs`
+  - `get_terminal_width()` [21..28] - returns usable width (terminal - 4 margin), min 40, default 80
+  - `clip_line()` [33..44] - clips line with "…" ellipsis, UTF-8 safe
+  - `compress_path()` [53..96] - preserves filename, truncates dirs from left with "…"
+  - `compress_command()` [101..103] - clips command from right with "…"
+  - `available_width_after_prefix()` [115..117] - helper for prefixed lines
+- `crates/g3-cli/src/ui_writer_impl.rs`
+  - `update_tool_output_line()` [407..445] - uses clip_line() with dynamic width
+  - `print_tool_output_line()` [447..454] - uses clip_line() for output lines
+  - `print_tool_output_header()` [293..410] - uses compress_path/compress_command
+  - `print_tool_compact()` [475..635] - width-aware compact tool display
