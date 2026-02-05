@@ -903,6 +903,77 @@ pub fn format_evaluation_results(eval: &RulespecEvaluation) -> String {
     output
 }
 
+/// Format a rulespec as human-readable markdown.
+/// 
+/// This produces a rich, readable format suitable for tool output,
+/// not raw YAML.
+pub fn format_rulespec_markdown(rulespec: &Rulespec) -> String {
+    let mut output = String::new();
+    
+    output.push_str("\n");
+    output.push_str("### Invariants (Rulespec)\n\n");
+    
+    if rulespec.claims.is_empty() && rulespec.predicates.is_empty() {
+        output.push_str("_No invariants defined._\n");
+        return output;
+    }
+    
+    // Group predicates by source
+    let task_predicates: Vec<_> = rulespec.predicates.iter()
+        .filter(|p| p.source == InvariantSource::TaskPrompt)
+        .collect();
+    let memory_predicates: Vec<_> = rulespec.predicates.iter()
+        .filter(|p| p.source == InvariantSource::Memory)
+        .collect();
+    
+    // Build claim lookup for selector display
+    let claims: std::collections::HashMap<&str, &Claim> = rulespec.claims.iter()
+        .map(|c| (c.name.as_str(), c))
+        .collect();
+    
+    // Format predicates from task prompt
+    if !task_predicates.is_empty() {
+        output.push_str("**From Task:**\n");
+        for pred in &task_predicates {
+            format_predicate_markdown(&mut output, pred, &claims);
+        }
+        output.push_str("\n");
+    }
+    
+    // Format predicates from memory
+    if !memory_predicates.is_empty() {
+        output.push_str("**From Memory:**\n");
+        for pred in &memory_predicates {
+            format_predicate_markdown(&mut output, pred, &claims);
+        }
+        output.push_str("\n");
+    }
+    
+    output
+}
+
+/// Format a single predicate as a markdown list item.
+fn format_predicate_markdown(
+    output: &mut String,
+    pred: &Predicate,
+    claims: &std::collections::HashMap<&str, &Claim>,
+) {
+    let selector = claims.get(pred.claim.as_str())
+        .map(|c| c.selector.as_str())
+        .unwrap_or(&pred.claim);
+    
+    let value_str = match &pred.value {
+        Some(v) => format!(" `{}`", yaml_to_display(v)),
+        None => String::new(),
+    };
+    
+    output.push_str(&format!("- `{}` **{}**{}\n", selector, pred.rule, value_str));
+    
+    if let Some(notes) = &pred.notes {
+        output.push_str(&format!("  - _{}_\n", notes));
+    }
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -1273,5 +1344,57 @@ mod tests {
         
         // Should deserialize back
         let _: ActionEnvelope = serde_yaml::from_str(&yaml).unwrap();
+    }
+
+    // ========================================================================
+    // Format Rulespec Markdown Tests
+    // ========================================================================
+
+    #[test]
+    fn test_format_rulespec_markdown_empty() {
+        let rulespec = Rulespec::new();
+        let output = format_rulespec_markdown(&rulespec);
+        
+        assert!(output.contains("### Invariants (Rulespec)"));
+        assert!(output.contains("_No invariants defined._"));
+    }
+
+    #[test]
+    fn test_format_rulespec_markdown_with_predicates() {
+        let mut rulespec = Rulespec::new();
+        rulespec.add_claim(Claim::new("caps", "csv_importer.capabilities"));
+        rulespec.add_predicate(
+            Predicate::new("caps", PredicateRule::Contains, InvariantSource::TaskPrompt)
+                .with_value(YamlValue::String("handle_tsv".to_string()))
+                .with_notes("User requested TSV support")
+        );
+        rulespec.add_predicate(
+            Predicate::new("caps", PredicateRule::Exists, InvariantSource::Memory)
+        );
+        
+        let output = format_rulespec_markdown(&rulespec);
+        
+        assert!(output.contains("### Invariants (Rulespec)"));
+        assert!(output.contains("**From Task:**"));
+        assert!(output.contains("**From Memory:**"));
+        assert!(output.contains("`csv_importer.capabilities`"));
+        assert!(output.contains("**contains**"));
+        assert!(output.contains("`handle_tsv`"));
+        assert!(output.contains("_User requested TSV support_"));
+        assert!(output.contains("**exists**"));
+    }
+
+    #[test]
+    fn test_format_rulespec_markdown_task_only() {
+        let mut rulespec = Rulespec::new();
+        rulespec.add_claim(Claim::new("test", "foo.bar"));
+        rulespec.add_predicate(
+            Predicate::new("test", PredicateRule::Exists, InvariantSource::TaskPrompt)
+        );
+        
+        let output = format_rulespec_markdown(&rulespec);
+        
+        assert!(output.contains("**From Task:**"));
+        assert!(!output.contains("**From Memory:**"));
     }
 }

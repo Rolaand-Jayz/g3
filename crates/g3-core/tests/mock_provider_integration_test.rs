@@ -822,3 +822,129 @@ async fn test_llm_repeats_text_before_each_tool_call() {
         preamble_count
     );
 }
+
+// =============================================================================
+// Plan Approval Gate Tests
+// =============================================================================
+
+/// Test: File changes are blocked when plan exists but is not approved
+///
+/// Scenario:
+/// 1. Create a plan (unapproved)
+/// 2. LLM tries to write a file
+/// 3. The file change should be reverted and a blocking message returned
+#[tokio::test]
+async fn test_plan_approval_gate_blocks_unapproved_changes() {
+    use g3_core::tools::plan::{write_plan, Plan, PlanItem, Checks, Check, PlanState};
+    use std::fs;
+    
+    // Create a temp directory that IS a git repo
+    let temp_dir = TempDir::new().unwrap();
+    let temp_path = temp_dir.path();
+    
+    // Initialize git repo
+    std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(temp_path)
+        .output()
+        .expect("Failed to init git repo");
+    
+    // Configure git user for the repo (needed for commits)
+    std::process::Command::new("git")
+        .args(["config", "user.email", "test@test.com"])
+        .current_dir(temp_path)
+        .output()
+        .expect("Failed to configure git email");
+    std::process::Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(temp_path)
+        .output()
+        .expect("Failed to configure git name");
+    
+    // Create an initial commit so we have a clean state
+    let readme_path = temp_path.join("README.md");
+    fs::write(&readme_path, "# Test").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "."])
+        .current_dir(temp_path)
+        .output()
+        .expect("Failed to git add");
+    std::process::Command::new("git")
+        .args(["commit", "-m", "initial"])
+        .current_dir(temp_path)
+        .output()
+        .expect("Failed to git commit");
+    
+    // Use absolute path so the file is written to the temp git repo
+    let new_file_path = temp_path.join("new_file.txt");
+    
+    // Create a mock provider that will try to write a file
+    let provider = MockProvider::new()
+        .with_native_tool_calling(true)
+        .with_response(MockResponse::native_tool_call(
+            "write_file",
+            serde_json::json!({
+                "file_path": new_file_path.to_string_lossy(),
+                "content": "This should be blocked!"
+            }),
+        ))
+        .with_default_response(MockResponse::text("I tried to write a file."));
+
+    // Create agent with a specific session ID
+    let mut registry = ProviderRegistry::new();
+    registry.register(provider);
+    let config = g3_config::Config::default();
+    
+    let mut agent = Agent::new_for_test(config, NullUiWriter, registry)
+        .await
+        .expect("Failed to create agent");
+    
+    // Set a session ID so the plan can be found
+    let session_id = "test-approval-gate-session";
+    agent.set_session_id(session_id.to_string());
+    
+    // Set the working directory to the temp git repo
+    agent.set_working_dir(temp_path.to_string_lossy().to_string());
+    
+    // Create an unapproved plan for this session
+    let mut plan = Plan::new("test-plan");
+    plan.items.push(PlanItem {
+        id: "I1".to_string(),
+        description: "Test item".to_string(),
+        state: PlanState::Todo,
+        touches: vec!["src/test.rs".to_string()],
+        checks: Checks {
+            happy: Check::new("happy", "target"),
+            negative: Check::new("negative", "target"),
+            boundary: Check::new("boundary", "target"),
+        },
+        evidence: vec![],
+        notes: None,
+    });
+    // Note: NOT calling plan.approve() - plan is unapproved
+    
+    write_plan(session_id, &plan).expect("Failed to write plan");
+    
+    // Execute task - the LLM will try to write a file
+    let result = agent.execute_task(
+        "Write a new file",
+        None,  // language
+        false  // auto_execute
+    ).await;
+    
+    assert!(result.is_ok(), "Task should complete (with blocking message): {:?}", result.err());
+    
+    // The new file should NOT exist (it was reverted)
+    assert!(
+        !new_file_path.exists(),
+        "New file should have been reverted/deleted"
+    );
+    
+    // Check that the blocking message was returned
+    let history = &agent.get_context_window().conversation_history;
+    let has_blocking_message = history
+        .iter()
+        .any(|m| m.content.contains("IMPLEMENTATION BLOCKED"));
+    
+    assert!(has_blocking_message, "Should have blocking message in context");
+}

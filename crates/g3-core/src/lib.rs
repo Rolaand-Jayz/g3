@@ -47,6 +47,7 @@ pub use prompts::get_agent_system_prompt;
 #[cfg(test)]
 mod task_result_comprehensive_tests;
 use crate::ui_writer::UiWriter;
+use tools::plan::{check_plan_approval_gate, ApprovalGateResult};
 
 #[cfg(test)]
 mod tilde_expansion_tests;
@@ -751,6 +752,16 @@ impl<W: UiWriter> Agent<W> {
     /// Get the current session ID for this agent
     pub fn get_session_id(&self) -> Option<&str> {
         self.session_id.as_deref()
+    }
+
+    /// Set the session ID (useful for testing)
+    pub fn set_session_id(&mut self, session_id: String) {
+        self.session_id = Some(session_id);
+    }
+
+    /// Set the working directory (useful for testing)
+    pub fn set_working_dir(&mut self, working_dir: String) {
+        self.working_dir = Some(working_dir);
     }
 
     // =========================================================================
@@ -2889,6 +2900,17 @@ Skip if nothing new. Be brief."#;
         self.tool_calls_this_turn.push(tool_call.tool.clone());
 
         let result = self.execute_tool_inner_in_dir(tool_call, working_dir).await;
+
+        // Check plan approval gate after tool execution
+        if let Some(session_id) = &self.session_id {
+            if let ApprovalGateResult::Blocked { message, .. } = 
+                check_plan_approval_gate(session_id, working_dir) 
+            {
+                // Return the blocking message instead of the tool result
+                return Ok(message);
+            }
+        }
+
         let log_str = match &result {
             Ok(s) => s.clone(),
             Err(e) => format!("ERROR: {}", e),

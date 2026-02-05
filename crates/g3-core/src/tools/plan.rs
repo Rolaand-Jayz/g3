@@ -20,7 +20,7 @@ use crate::ToolCall;
 
 use super::executor::ToolContext;
 
-use super::invariants::{get_envelope_path, get_rulespec_path};
+use super::invariants::{format_rulespec_markdown, get_envelope_path, get_rulespec_path, read_rulespec};
 
 // ============================================================================
 // Plan Schema
@@ -866,14 +866,30 @@ pub async fn execute_plan_write<W: UiWriter>(
     let yaml = serde_yaml::to_string(&plan)?;
     ctx.ui_writer.print_plan_compact(Some(&yaml), Some(&plan_path_str), true);
 
+    // Read and format rulespec if it exists
+    let rulespec_section = match read_rulespec(session_id) {
+        Ok(Some(rulespec)) => format_rulespec_markdown(&rulespec),
+        Ok(None) => "\n_No rulespec generated._\n".to_string(),
+        Err(_) => "\n_No rulespec generated._\n".to_string(),
+    };
+
     // Check if plan is now complete and trigger verification
     if plan.is_complete() && plan.is_approved() {
         let verification = plan_verify(&plan, ctx.working_dir);
         let verification_output = format_verification_results(&verification, ctx.session_id);
-        return Ok(format!("✅ Plan updated: {}\n{}", plan.status_summary(), verification_output));
+        return Ok(format!(
+            "✅ Plan updated: {}\n{}\n{}",
+            plan.status_summary(),
+            verification_output,
+            rulespec_section
+        ));
     }
 
-    Ok(format!("✅ Plan updated: {}", plan.status_summary()))
+    Ok(format!(
+        "✅ Plan updated: {}\n{}",
+        plan.status_summary(),
+        rulespec_section
+    ))
 }
 
 /// Execute the `plan_approve` tool.
@@ -914,6 +930,124 @@ pub async fn execute_plan_approve<W: UiWriter>(
         "✅ Plan approved at revision {}. You may now begin implementation.",
         plan.revision
     ))
+}
+
+// ============================================================================
+// Plan Approval Gate
+// ============================================================================
+
+/// Result of checking the plan approval gate after a tool execution.
+#[derive(Debug)]
+pub enum ApprovalGateResult {
+    /// No plan exists, or plan is approved - allow the operation
+    Allowed,
+    /// Plan exists but not approved, and files were changed - blocked
+    Blocked {
+        /// Message to inject into the conversation
+        message: String,
+        /// Files that were reverted
+        reverted_files: Vec<String>,
+    },
+    /// Not a git repository - skip the check
+    NotGitRepo,
+}
+
+/// Check if file changes occurred without an approved plan, and revert them if so.
+/// 
+/// This function should be called after each tool execution when in plan mode.
+/// It checks `git status --porcelain` for changes, and if a plan exists but isn't
+/// approved, it reverts those changes and returns a blocking message.
+pub fn check_plan_approval_gate(session_id: &str, working_dir: Option<&str>) -> ApprovalGateResult {
+    let dir = working_dir.unwrap_or(".");
+    
+    // Check if this is a git repository
+    let git_check = std::process::Command::new("git")
+        .args(["rev-parse", "--git-dir"])
+        .current_dir(dir)
+        .output();
+    
+    if git_check.is_err() || !git_check.unwrap().status.success() {
+        return ApprovalGateResult::NotGitRepo;
+    }
+    
+    // Check if a plan exists and whether it's approved
+    let plan = match read_plan(session_id) {
+        Ok(Some(plan)) => plan,
+        Ok(None) => return ApprovalGateResult::Allowed, // No plan, allow
+        Err(_) => return ApprovalGateResult::Allowed,   // Can't read plan, allow
+    };
+    
+    if plan.is_approved() {
+        return ApprovalGateResult::Allowed;
+    }
+    
+    // Plan exists but not approved - check for file changes
+    let status_output = std::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(dir)
+        .output();
+    
+    let output = match status_output {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
+        _ => return ApprovalGateResult::Allowed, // Can't get status, allow
+    };
+    
+    if output.trim().is_empty() {
+        return ApprovalGateResult::Allowed; // No changes
+    }
+    
+    // Parse changed files and revert them
+    let mut reverted_files = Vec::new();
+    
+    for line in output.lines() {
+        if line.len() < 3 {
+            continue;
+        }
+        let status = &line[0..2];
+        let file_path = line[3..].trim();
+        
+        match status {
+            "??" => {
+                // Untracked file - remove it
+                let _ = std::fs::remove_file(std::path::Path::new(dir).join(file_path));
+                reverted_files.push(format!("{} (new file)", file_path));
+            }
+            _ => {
+                // Modified/added/deleted tracked file - git checkout
+                let _ = std::process::Command::new("git")
+                    .args(["checkout", "--", file_path])
+                    .current_dir(dir)
+                    .output();
+                reverted_files.push(format!("{} (modified)", file_path));
+            }
+        }
+    }
+    
+    if reverted_files.is_empty() {
+        return ApprovalGateResult::Allowed;
+    }
+    
+    let files_list = reverted_files.iter()
+        .map(|f| format!("  - {}", f))
+        .collect::<Vec<_>>()
+        .join("\n");
+    
+    let message = format!(
+        "⚠️ IMPLEMENTATION BLOCKED\n\n\
+         You modified files without an approved plan:\n\
+         {}\n\n\
+         These changes have been reverted.\n\n\
+         Before implementing, you must:\n\
+         1. Create a plan with `plan_write`\n\
+         2. Request the user's explicit approval or edits to plan\n\n\
+         Do not attempt to implement until the plan is approved.",
+        files_list
+    );
+    
+    ApprovalGateResult::Blocked {
+        message,
+        reverted_files,
+    }
 }
 
 #[cfg(test)]
@@ -1201,5 +1335,19 @@ items: []
         assert!(!VerificationStatus::Verified.is_warning_or_error());
         assert!(VerificationStatus::Warning("warn".to_string()).is_warning_or_error());
         assert!(VerificationStatus::Error("err".to_string()).is_warning_or_error());
+    }
+
+    #[test]
+    fn test_approval_gate_no_plan() {
+        // With a non-existent session, there's no plan, so it should allow
+        let result = check_plan_approval_gate("nonexistent-session-xyz", Some("."));
+        assert!(matches!(result, ApprovalGateResult::Allowed));
+    }
+
+    #[test]
+    fn test_approval_gate_not_git_repo() {
+        // /tmp is typically not a git repo
+        let result = check_plan_approval_gate("any-session", Some("/tmp"));
+        assert!(matches!(result, ApprovalGateResult::NotGitRepo));
     }
 }
