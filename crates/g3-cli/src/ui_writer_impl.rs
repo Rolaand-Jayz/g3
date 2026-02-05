@@ -346,22 +346,7 @@ impl UiWriter for ConsoleUiWriter {
                 // Shorten paths in the value (handles both file paths and shell commands)
                 let shortened = shorten_paths_in_command(first_line, workspace_ref, project_ref);
 
-                // Calculate available width for the value
-                // Header format: "┌─<tool_color> <tool_name><reset><magenta> | <value><suffix><reset>"
-                // Prefix overhead: "┌─" (2) + tool_name + " | " (3) = 5 + tool_name.len()
-                // For shell: " ●  <tool_name>  | " = ~17 chars overhead
-                let is_shell_tool = tool_name == "shell";
-                let prefix_overhead = if is_shell_tool { 17 } else { 5 + tool_name.len() };
-                let available_for_value = term_width.saturating_sub(prefix_overhead);
-
-                // Compress path or command to fit available width
-                let display_value = if is_shell_tool || tool_name == "background_process" {
-                    compress_command(&shortened, available_for_value)
-                } else {
-                    compress_path(&shortened, available_for_value)
-                };
-
-                // Add range information for read_file tool calls
+                // Build range suffix for read_file FIRST so we can account for its width
                 let header_suffix = if tool_name == "read_file" {
                     // Check if start or end parameters are present
                     let has_start = args.iter().any(|(k, _)| k == "start");
@@ -384,6 +369,22 @@ impl UiWriter for ConsoleUiWriter {
                     }
                 } else {
                     String::new()
+                };
+
+                // Calculate available width for the value
+                // Header format: "┌─<tool_color> <tool_name><reset><magenta> | <value><suffix><reset>"
+                // Prefix overhead: "┌─" (2) + tool_name + " | " (3) = 5 + tool_name.len()
+                // For shell: " ●  <tool_name>  | " = ~17 chars overhead
+                let is_shell_tool = tool_name == "shell";
+                let prefix_overhead = if is_shell_tool { 17 } else { 5 + tool_name.len() };
+                // Subtract suffix length from available width
+                let available_for_value = term_width.saturating_sub(prefix_overhead + header_suffix.chars().count());
+
+                // Compress path or command to fit available width
+                let display_value = if is_shell_tool || tool_name == "background_process" {
+                    compress_command(&shortened, available_for_value)
+                } else {
+                    compress_path(&shortened, available_for_value)
                 };
 
                 // Check if this is a shell command - use compact format
@@ -587,6 +588,20 @@ impl UiWriter for ConsoleUiWriter {
             summary.to_string()
         };
 
+        // Calculate available width for summary based on line format
+        // Continuation: "   └─ reading further" (21) + range + " | " (3) + summary + " | " (3) + tokens+time (~15) = ~42 + range
+        // No path: " ● " (3) + tool_name (11) + " | " (3) + summary + " | " (3) + tokens+time (~15) = ~35
+        // With path: " ● " (3) + tool_name (11) + " | " (3) + path + range + " | " (3) + summary + " | " (3) + tokens+time (~15)
+        let tokens_time_overhead = 3 + format!("{}", tokens_delta).len() + 3 + duration_str.len(); // " | N ◉ Xs"
+        let summary_available = if is_continuation {
+            term_width.saturating_sub(42 + range_suffix.chars().count() + tokens_time_overhead)
+        } else if display_arg.is_empty() {
+            term_width.saturating_sub(35 + tokens_time_overhead)
+        } else {
+            term_width.saturating_sub(35 + display_arg.chars().count() + range_suffix.chars().count() + tokens_time_overhead)
+        };
+        let display_summary = clip_line(&display_summary, summary_available);
+
         // Print compact single line
         if is_continuation {
             // Continuation line for consecutive read_file on same file:
@@ -678,8 +693,11 @@ impl UiWriter for ConsoleUiWriter {
                         line.replace("- [ ]", "□")
                     };
 
+                    // Clip line to fit terminal width (prefix "   X  " is 6 chars)
+                    let max_content_width = get_terminal_width().saturating_sub(6);
+                    let clipped_line = clip_line(&styled_line, max_content_width);
                     // Dim the line content
-                    println!("   \x1b[2m{}  {}\x1b[0m", prefix, styled_line);
+                    println!("   \x1b[2m{}  {}\x1b[0m", prefix, clipped_line);
                 }
                 // Add blank line after content for readability
                 println!();
@@ -797,18 +815,12 @@ impl UiWriter for ConsoleUiWriter {
                         let item_prefix = if is_last_item { "└" } else { "├" };
                         let child_prefix = if is_last_item { " " } else { "│" };
 
-                        // Truncate description if too long
-                        let max_desc_len = 70;
-                        let desc_display = if item.description.chars().count() > max_desc_len {
-                            let truncate_at = item.description
-                                .char_indices()
-                                .nth(max_desc_len - 3)
-                                .map(|(i, _)| i)
-                                .unwrap_or(item.description.len());
-                            format!("{}...", &item.description[..truncate_at])
-                        } else {
-                            item.description.clone()
-                        };
+                        // Calculate available width for content
+                        // Item line prefix: "   X " (5) + state icon (1) + " " (1) + ID (~3) + " " (1) = ~11 chars
+                        let term_width = get_terminal_width();
+                        let item_line_overhead = 11 + item.id.chars().count();
+                        let max_desc_width = term_width.saturating_sub(item_line_overhead);
+                        let desc_display = clip_line(&item.description, max_desc_width);
 
                         // Item line: state icon, ID, description (strikethrough if done)
                         let desc_style = if item.state == "done" { "\x1b[9m\x1b[2m" } else { "" };
@@ -820,38 +832,35 @@ impl UiWriter for ConsoleUiWriter {
                         if item.state == "done" {
                             // Show evidence for done items
                             if !item.evidence.is_empty() {
-                                let evidence_str = item.evidence.iter()
-                                    .map(|e| {
-                                        // Shorten long evidence paths
-                                        if e.len() > 40 {
-                                            let truncate_at = e.char_indices().nth(37).map(|(i, _)| i).unwrap_or(e.len());
-                                            format!("{}...", &e[..truncate_at])
-                                        } else {
-                                            e.clone()
-                                        }
-                                    })
-                                    .collect::<Vec<_>>()
-                                    .join(", ");
-                                println!("   \x1b[2m{}    📎 {}\x1b[0m", child_prefix, evidence_str);
+                                // Child line prefix: "   X    📎 " = 11 chars
+                                let child_content_width = term_width.saturating_sub(11);
+                                let evidence_str = item.evidence.join(", ");
+                                let evidence_display = clip_line(&evidence_str, child_content_width);
+                                println!("   \x1b[2m{}    📎 {}\x1b[0m", child_prefix, evidence_display);
                             }
                         } else {
                             // Show touches for non-done items
+                            // Child line prefix: "   X    → " = 10 chars
+                            let child_content_width = term_width.saturating_sub(10);
                             let touches_str = item.touches.join(", ");
-                            println!("   \x1b[2m{}    → {}\x1b[0m", child_prefix, touches_str);
+                            let touches_display = clip_line(&touches_str, child_content_width);
+                            println!("   \x1b[2m{}    → {}\x1b[0m", child_prefix, touches_display);
 
                             // Show checks if present (compact format)
                             if let Some(ref checks) = item.checks {
+                                // Check line prefix: "   X    X " = 10 chars
+                                let check_content_width = term_width.saturating_sub(10);
                                 // Happy check (always single)
-                                println!("   \x1b[2m{}    \x1b[32m✓\x1b[0m\x1b[2m {}\x1b[0m", child_prefix, checks.happy.desc);
+                                println!("   \x1b[2m{}    \x1b[32m✓\x1b[0m\x1b[2m {}\x1b[0m", child_prefix, clip_line(&checks.happy.desc, check_content_width));
 
                                 // Negative checks (can be multiple)
                                 for neg in &checks.negative {
-                                    println!("   \x1b[2m{}    \x1b[31m✗\x1b[0m\x1b[2m {}\x1b[0m", child_prefix, neg.desc);
+                                    println!("   \x1b[2m{}    \x1b[31m✗\x1b[0m\x1b[2m {}\x1b[0m", child_prefix, clip_line(&neg.desc, check_content_width));
                                 }
 
                                 // Boundary checks (can be multiple)
                                 for bnd in &checks.boundary {
-                                    println!("   \x1b[2m{}    \x1b[33m◇\x1b[0m\x1b[2m {}\x1b[0m", child_prefix, bnd.desc);
+                                    println!("   \x1b[2m{}    \x1b[33m◇\x1b[0m\x1b[2m {}\x1b[0m", child_prefix, clip_line(&bnd.desc, check_content_width));
                                 }
                             }
                         }
@@ -859,7 +868,9 @@ impl UiWriter for ConsoleUiWriter {
 
                     // File path link at the end
                     if let Some(path) = plan_file_path {
-                        println!("   \x1b[2m📄 {}\x1b[0m", path);
+                        // Path line prefix: "   📄 " = 5 chars
+                        let path_width = get_terminal_width().saturating_sub(5);
+                        println!("   \x1b[2m📄 {}\x1b[0m", clip_line(path, path_width));
                     }
 
                     // Add blank line after content for readability
@@ -867,8 +878,9 @@ impl UiWriter for ConsoleUiWriter {
                 } else {
                     // Failed to parse - fall back to simple display
                     println!(" \x1b[2m●\x1b[0m {}{:<width$}\x1b[0m", tool_color, tool_name, width = TOOL_NAME_PADDING);
+                    let fallback_width = get_terminal_width().saturating_sub(6); // "   │  " = 6 chars
                     for line in yaml.lines().take(20) {
-                        println!("   \x1b[2m│  {}\x1b[0m", line);
+                        println!("   \x1b[2m│  {}\x1b[0m", clip_line(line, fallback_width));
                     }
                     println!();
                 }
