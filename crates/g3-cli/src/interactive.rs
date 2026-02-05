@@ -287,6 +287,9 @@ pub async fn run_interactive<W: UiWriter>(
     
     // Track plan mode state (start in plan mode for non-agent mode)
     let mut in_plan_mode = !from_agent_mode;
+    
+    // Sync agent's plan mode state with CLI state
+    agent.set_plan_mode(in_plan_mode);
 
     // Initialize rustyline editor with history
     let config = Config::builder()
