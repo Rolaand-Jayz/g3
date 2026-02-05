@@ -20,7 +20,7 @@ use crate::ToolCall;
 
 use super::executor::ToolContext;
 
-use super::invariants::{format_envelope_markdown, format_rulespec_markdown, get_envelope_path, get_rulespec_path, read_envelope, read_rulespec};
+use super::invariants::{format_envelope_markdown, format_rulespec_markdown, get_envelope_path, get_rulespec_path, read_envelope, read_rulespec, write_rulespec, Rulespec};
 
 // ============================================================================
 // Plan Schema
@@ -845,14 +845,57 @@ pub async fn execute_plan_write<W: UiWriter>(
         None => return Ok("❌ Missing 'plan' argument. Provide the plan as YAML.".to_string()),
     };
 
+    // Get optional rulespec content from args
+    let rulespec_yaml = tool_call.args.get("rulespec").and_then(|v| v.as_str());
+
     // Parse the YAML
     let mut plan: Plan = match serde_yaml::from_str(plan_yaml) {
         Ok(p) => p,
         Err(e) => return Ok(format!("❌ Invalid plan YAML: {}", e)),
     };
 
-    // Load existing plan to preserve approved_revision and increment revision
-    if let Some(existing) = read_plan(session_id)? {
+    // Load existing plan to check if this is a new plan or an update
+    let existing_plan = read_plan(session_id)?;
+    let is_new_plan = existing_plan.is_none();
+
+    // For NEW plans, rulespec is REQUIRED
+    // This prevents the tautology problem where invariants are written after implementation
+    if is_new_plan && rulespec_yaml.is_none() {
+        return Ok("❌ Missing 'rulespec' argument. New plans MUST include a rulespec with invariants.\n\n\
+            The rulespec defines constraints that MUST or MUST NOT hold, extracted from:\n\
+            - task_prompt: What the user explicitly requires\n\
+            - memory: Persistent rules from workspace memory\n\n\
+            Example rulespec:\n\
+            ```yaml\n\
+            claims:\n\
+              - name: feature_capabilities\n\
+                selector: \"feature.capabilities\"\n\
+            predicates:\n\
+              - claim: feature_capabilities\n\
+                rule: contains\n\
+                value: \"required_feature\"\n\
+                source: task_prompt\n\
+                notes: \"User explicitly requested this\"\n\
+            ```".to_string());
+    }
+
+    // Parse and validate rulespec if provided
+    let rulespec: Option<Rulespec> = if let Some(yaml) = rulespec_yaml {
+        match serde_yaml::from_str(yaml) {
+            Ok(r) => {
+                let rs: Rulespec = r;
+                if let Err(e) = rs.validate() {
+                    return Ok(format!("❌ Invalid rulespec: {}", e));
+                }
+                Some(rs)
+            }
+            Err(e) => return Ok(format!("❌ Invalid rulespec YAML: {}", e)),
+        }
+    } else {
+        None
+    };
+
+    if let Some(existing) = existing_plan {
         // Preserve approved_revision from existing plan
         plan.approved_revision = existing.approved_revision;
         // Increment revision
@@ -888,17 +931,23 @@ pub async fn execute_plan_write<W: UiWriter>(
         return Ok(format!("❌ Failed to write plan: {}", e));
     }
 
+    // Write the rulespec if provided (atomically with plan)
+    if let Some(ref rs) = rulespec {
+        if let Err(e) = write_rulespec(session_id, rs) {
+            return Ok(format!("❌ Failed to write rulespec: {}", e));
+        }
+    }
+
     // Display the plan in compact format
     let plan_path = get_plan_path(session_id);
     let plan_path_str = plan_path.to_string_lossy().to_string();
     let yaml = serde_yaml::to_string(&plan)?;
     ctx.ui_writer.print_plan_compact(Some(&yaml), Some(&plan_path_str), true);
 
-    // Read and format rulespec if it exists
-    let rulespec_section = match read_rulespec(session_id) {
-        Ok(Some(rulespec)) => format_rulespec_markdown(&rulespec),
-        Ok(None) => "\n_No rulespec generated._\n".to_string(),
-        Err(_) => "\n_No rulespec generated._\n".to_string(),
+    // Format rulespec section - use provided rulespec or read from disk
+    let rulespec_section = match rulespec.as_ref().or(read_rulespec(session_id).ok().flatten().as_ref()) {
+        Some(rs) => format_rulespec_markdown(rs),
+        None => "\n_No rulespec defined._\n".to_string(),
     };
 
     // Read and format envelope if it exists

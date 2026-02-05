@@ -31,7 +31,7 @@ Plan Mode is a cognitive forcing system that prevents:
 
 ## Workflow
 
-1. **Draft**: Call `plan_read` to check for existing plan, then `plan_write` to create/update
+1. **Draft**: Call `plan_read` to check for existing plan, then `plan_write` with BOTH plan AND rulespec
 2. **Approval**: Ask user to approve before starting work ("'approve', or edit plan?"). In non-interactive mode (autonomous/one-shot), plans auto-approve on write.
 3. **Execute**: Implement items, updating plan with `plan_write` to mark progress
 4. **Complete**: When all items are done/blocked, verification runs automatically
@@ -56,46 +56,16 @@ When drafting a plan, you MUST:
 - Keep items ~7 by default
 - Commit to where the work will live (touches)
 - Provide all three checks (happy, negative, boundary)
+- **Include rulespec with invariants** (required for new plans)
 
 When updating a plan:
 - Cannot remove items from an approved plan (mark as blocked instead)
 - Must provide evidence and notes when marking item as done
+- Rulespec is optional for updates (already saved from initial creation)
 
-## Example Plan Item
+## Invariants (Rulespec)
 
-```yaml
-- id: I1
-  description: "Add CSV import for comic book metadata"
-  state: todo
-  touches: ["src/import", "src/library"]
-  checks:
-    happy:
-      desc: "Valid CSV imports 3 comics"
-      target: "import::csv"
-    negative:
-      - desc: "Missing column errors with MissingColumn"
-        target: "import::csv"
-      - desc: "Malformed row errors with ParseError"
-        target: "import::csv"
-    boundary:
-      - desc: "Empty file yields empty import without error"
-        target: "import::csv"
-      - desc: "File with only headers yields empty import"
-        target: "import::csv"
-```
-
-When done, add evidence and notes:
-```yaml
-  state: done
-  evidence:
-    - "src/import/csv.rs:42-118"
-    - "tests/import_csv.rs::test_valid_csv"
-  notes: "Extended existing parser instead of creating duplicate"
-```
-
-## Invariants
-
-For all plans, you MUST extract invariants from each task and write them as a **rulespec**.
+For all NEW plans, you MUST extract invariants and provide them as the `rulespec` argument to `plan_write`.
 
 ### What are Invariants?
 
@@ -104,8 +74,6 @@ Invariants are constraints that MUST or MUST NOT hold. Extract them from:
 - **memory**: Persistent rules from workspace memory ("must be Send + Sync", "must not block async runtime")
 
 ### Rulespec Structure
-
-Write invariants as a `rulespec.yaml` file with claims and predicates:
 
 ```yaml
 claims:
@@ -136,9 +104,84 @@ predicates:
 - `greater_than` / `less_than`: Numeric comparisons
 - `matches`: Regex pattern match
 
-### Action Envelope
+## Example: Creating a New Plan
 
-As the FINAL step, write an `envelope.yaml` with facts about completed work:
+When creating a NEW plan, call `plan_write` with BOTH arguments:
+
+```
+plan_write(
+  plan: "
+    plan_id: csv-import-feature
+    items:
+      - id: I1
+        description: Add CSV import for comic book metadata
+        state: todo
+        touches: [src/import, src/library]
+        checks:
+          happy:
+            desc: Valid CSV imports 3 comics
+            target: import::csv
+          negative:
+            - desc: Missing column errors with MissingColumn
+              target: import::csv
+          boundary:
+            - desc: Empty file yields empty import without error
+              target: import::csv
+  ",
+  rulespec: "
+    claims:
+      - name: csv_capabilities
+        selector: csv_importer.capabilities
+      - name: api_changes
+        selector: breaking_changes
+    predicates:
+      - claim: csv_capabilities
+        rule: contains
+        value: handle_tsv
+        source: task_prompt
+        notes: User explicitly requested TSV support
+      - claim: api_changes
+        rule: not_exists
+        source: memory
+        notes: AGENTS.md requires backward compatibility
+  "
+)
+```
+
+## Example: Updating a Plan
+
+When UPDATING an existing plan (marking items done), only `plan` is required:
+
+```
+plan_write(
+  plan: "
+    plan_id: csv-import-feature
+    items:
+      - id: I1
+        description: Add CSV import for comic book metadata
+        state: done
+        touches: [src/import, src/library]
+        checks:
+          happy:
+            desc: Valid CSV imports 3 comics
+            target: import::csv
+          negative:
+            - desc: Missing column errors with MissingColumn
+              target: import::csv
+          boundary:
+            - desc: Empty file yields empty import without error
+              target: import::csv
+        evidence:
+          - src/import/csv.rs:42-118
+          - tests/import_csv.rs::test_valid_csv
+        notes: Extended existing parser instead of creating duplicate
+  "
+)
+```
+
+## Action Envelope
+
+As the FINAL step before marking the last item done, write an `envelope.yaml` with facts about completed work:
 
 ```yaml
 facts:
@@ -149,12 +192,7 @@ facts:
   breaking_changes: null  # Explicitly absent
 ```
 
-### Workflow
-
-1. While drafting the plan, write `rulespec.yaml` with claims and predicates extracted from the task
-2. Implement all plan items
-3. After all work is complete, write `envelope.yaml` with facts about the completed work
-4. **THEN** call `plan_write` to mark the final item done - verification will check both files
+The envelope is verified against the rulespec when the plan completes.
 
 # Workspace Memory
 

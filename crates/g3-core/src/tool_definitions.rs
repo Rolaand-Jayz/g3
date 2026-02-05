@@ -199,13 +199,17 @@ fn create_core_tools() -> Vec<Tool> {
 
     tools.push(Tool {
         name: "plan_write".to_string(),
-        description: "Create or update the Plan for this session. Provide plan as YAML with plan_id and items array. See system prompt for full schema (items need: id, description, state, touches, checks with happy/negative/boundary). Evidence and notes required when marking done.".to_string(),
+        description: "Create or update the Plan for this session. For NEW plans, you MUST provide both 'plan' and 'rulespec' arguments. The rulespec defines invariants (constraints that must/must not hold) extracted from the task and memory. For plan UPDATES, rulespec is optional.".to_string(),
         input_schema: json!({
             "type": "object",
             "properties": {
                 "plan": {
                     "type": "string",
                     "description": "The plan as YAML. Must include plan_id and items array."
+                },
+                "rulespec": {
+                    "type": "string",
+                    "description": "The rulespec as YAML with claims and predicates. REQUIRED for new plans, optional for updates. Defines invariants from task_prompt and memory."
                 }
             },
             "required": ["plan"]

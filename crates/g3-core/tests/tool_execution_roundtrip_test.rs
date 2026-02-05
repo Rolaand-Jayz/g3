@@ -425,6 +425,14 @@ items:
       boundary:
         - desc: Edge
           target: test"#
+                ,
+                "rulespec": r#"claims:
+  - name: test_feature
+    selector: test.done
+predicates:
+  - claim: test_feature
+    rule: exists
+    source: task_prompt"#
             }),
         );
         
@@ -479,6 +487,14 @@ items:
       happy: {desc: Works, target: test}
       negative: [{desc: Errors, target: test}]
       boundary: [{desc: Edge, target: test}]"#
+                ,
+                "rulespec": r#"claims:
+  - name: approval_test
+    selector: test.approved
+predicates:
+  - claim: approval_test
+    rule: exists
+    source: task_prompt"#
             }),
         );
         agent.execute_tool(&write_call).await.unwrap();
