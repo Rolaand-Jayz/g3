@@ -10,8 +10,6 @@
 //! 4. Global `~/.g3/skills/` directory
 //! 5. Embedded skills (this module - always available)
 
-use std::collections::HashMap;
-
 /// An embedded skill with its SKILL.md content and optional scripts.
 #[derive(Debug, Clone)]
 pub struct EmbeddedSkill {
@@ -48,11 +46,6 @@ pub fn get_embedded_skill(name: &str) -> Option<&'static EmbeddedSkill> {
     EMBEDDED_SKILLS.iter().find(|s| s.name == name)
 }
 
-/// Get embedded skills as a map for easy lookup.
-pub fn get_embedded_skills_map() -> HashMap<&'static str, &'static EmbeddedSkill> {
-    EMBEDDED_SKILLS.iter().map(|s| (s.name, s)).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -77,11 +70,5 @@ mod tests {
     fn test_get_by_name() {
         assert!(get_embedded_skill("research").is_some());
         assert!(get_embedded_skill("nonexistent").is_none());
-    }
-
-    #[test]
-    fn test_skills_map() {
-        let map = get_embedded_skills_map();
-        assert!(map.contains_key("research"));
     }
 }

@@ -161,11 +161,6 @@ fn expand_tilde(path: &str) -> PathBuf {
     PathBuf::from(expanded.as_ref())
 }
 
-/// Check if a skill is from an embedded source.
-pub fn is_embedded_skill(skill: &Skill) -> bool {
-    skill.path.starts_with("<embedded:")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -247,7 +242,7 @@ mod tests {
         
         let research = skills.iter().find(|s| s.name == "research").unwrap();
         assert_eq!(research.description, "Custom research skill");
-        assert!(!is_embedded_skill(research), "Should not be marked as embedded");
+        assert!(!research.path.starts_with("<embedded:"), "Should not be marked as embedded");
     }
     
     #[test]
@@ -372,12 +367,5 @@ mod tests {
         
         let no_tilde = expand_tilde("/absolute/path");
         assert_eq!(no_tilde, PathBuf::from("/absolute/path"));
-    }
-    
-    #[test]
-    fn test_is_embedded_skill() {
-        let skills = discover_skills(None, &[]);
-        let research = skills.iter().find(|s| s.name == "research").unwrap();
-        assert!(is_embedded_skill(research));
     }
 }

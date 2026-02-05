@@ -1,5 +1,5 @@
 # Workspace Memory
-> Updated: 2026-02-04T23:42:21Z | Size: 19.9k chars
+> Updated: 2026-02-05T03:06:55Z | Size: 23.5k chars
 
 ### Remember Tool Wiring
 - `crates/g3-core/src/tools/memory.rs` [0..5000] - `execute_remember()`, `get_memory_path()`, `merge_memory()`
@@ -412,3 +412,33 @@ allowed-tools: Bash Read  # Optional/experimental
 # Skill Title
 Detailed instructions...
 ```
+
+### Embedded Skills System
+Skills are portable packages with SKILL.md + optional scripts, discovered from multiple locations.
+
+- `crates/g3-core/src/skills/embedded.rs`
+  - `EmbeddedSkill` [22..28] - name, skill_md content, scripts array
+  - `EMBEDDED_SKILLS` [32..42] - static array with include_str! for research skill
+  - `get_embedded_skill()` [48..50] - lookup by name
+
+- `crates/g3-core/src/skills/extraction.rs`
+  - `extract_script()` [28..85] - extracts embedded script to `.g3/bin/`, tracks version hash
+  - `needs_update()` [107..118] - compares stored hash vs current content
+  - `compute_hash()` [121..128] - DefaultHasher for version tracking
+
+- `crates/g3-core/src/skills/discovery.rs`
+  - `discover_skills()` [38..85] - scans 5 locations in priority order (embedded → global → extra → workspace → repo)
+  - `load_embedded_skills()` [88..102] - sets synthetic path `<embedded:name>/SKILL.md`
+  - `is_embedded_skill()` [161..163] - checks if path starts with `<embedded:`
+
+- `skills/research/g3-research` - bash script for async research
+  - `write_status()` [52..88] - writes status.json (BUG: sed doesn't escape real newlines)
+  - `extract_report()` [98..135] - extracts between markers or falls back to filtering
+
+### SDLC Pipeline Merge
+- `crates/studio/src/main.rs`
+  - `has_commits_on_branch()` [715..728] - counts commits ahead of main (hardcodes 'main')
+  - `cmd_sdlc_run()` [664..708] - merges on completion, preserves worktree on failure
+
+- `crates/studio/src/git.rs`
+  - `merge_to_main()` - checkouts main and merges branch (hardcodes 'main')
