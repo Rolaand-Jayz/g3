@@ -124,6 +124,28 @@ plan_write(
 
 When marking done, add `evidence` and `notes` to the item.
 
+## Action Envelope
+
+Before marking the last plan item done, write an `envelope.yaml` file with facts about completed work. The envelope captures what was actually built so it can be verified against the rulespec.
+
+```yaml
+facts:
+  csv_importer:
+    capabilities: [handle_headers, handle_tsv, handle_quoted_fields]
+    file: "src/import/csv.rs"
+    tests: ["test_valid_csv", "test_tsv_import", "test_missing_column"]
+  api_changes:
+    breaking: false
+    new_endpoints: ["/api/import/csv"]
+  breaking_changes: null  # Use null to assert something is explicitly absent
+```
+
+**Rules:**
+- Selectors in rulespec (e.g., `csv_importer.capabilities`) are evaluated against envelope facts
+- Use dot notation for nested access: `api_changes.breaking`
+- Use `null` to explicitly assert absence (for `not_exists` predicates)
+- The envelope is automatically verified against the rulespec when the plan completes
+
 # Workspace Memory
 
 Memory is auto-loaded at startup. Call `remember` at end of turn when you discover code locations worth noting.
