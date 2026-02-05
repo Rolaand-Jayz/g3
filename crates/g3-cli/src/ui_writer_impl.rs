@@ -418,7 +418,14 @@ impl UiWriter for ConsoleUiWriter {
         let mut line_printed = self.output_line_printed.lock().unwrap();
         let is_shell = *self.is_shell_compact.lock().unwrap();
         let prefix_width = if is_shell { 6 } else { 3 };
-        let max_content_width = get_terminal_width().saturating_sub(prefix_width);
+        // For shell, reserve space for suffix: " (N lines) | N ◉ Xms"
+        // - " (9999 lines)" = 13 chars max
+        // - " | 99999 ◉ 999ms" = 17 chars max
+        // Total suffix overhead: ~30 chars
+        let suffix_overhead = if is_shell { 30 } else { 0 };
+        let max_content_width = get_terminal_width()
+            .saturating_sub(prefix_width)
+            .saturating_sub(suffix_overhead);
 
         // If we've already printed a line, clear it first
         if *line_printed {
