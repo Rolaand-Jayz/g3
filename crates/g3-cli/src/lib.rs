@@ -277,7 +277,6 @@ async fn run_console_mode(
             cli.show_code,
             combined_content,
             project.workspace(),
-            cli.new_session || cli.resume.is_some(), // Skip auto-resume prompt if --resume was used
             None, // agent_name (not in agent mode)
             initial_project,
         )

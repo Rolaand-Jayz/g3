@@ -292,7 +292,6 @@ pub async fn run_agent_mode(
             false, // show_code
             combined_content,
             &workspace_dir,
-            flags.new_session,
             Some(agent_name),  // agent name for prompt (e.g., "butler>")
             initial_project,
         )

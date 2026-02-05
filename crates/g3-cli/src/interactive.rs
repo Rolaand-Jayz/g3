@@ -17,7 +17,7 @@ use g3_core::ToolCall;
 
 use crate::commands::{handle_command, CommandResult};
 use crate::display::{LoadedContent, print_loaded_status, print_project_heading, print_workspace_path};
-use crate::g3_status::{G3Status, Status};
+use crate::g3_status::G3Status;
 use crate::project::Project;
 use crate::project_files::extract_project_heading;
 use crate::simple_output::SimpleOutput;
@@ -195,55 +195,11 @@ pub async fn run_interactive<W: UiWriter>(
     show_code: bool,
     combined_content: Option<String>,
     workspace_path: &Path,
-    new_session: bool,
     agent_name: Option<&str>,
     initial_project: Option<Project>,
 ) -> Result<()> {
     let output = SimpleOutput::new();
     let from_agent_mode = agent_name.is_some();
-
-    // Check for session continuation (skip if --new-session was passed or coming from agent mode)
-    // Agent mode with --chat should start fresh without prompting
-    if !new_session && !from_agent_mode {
-      if let Ok(Some(continuation)) = g3_core::load_continuation() {
-        // Print session info and prompt on same line (no newline)
-        print!(
-            "\n >> session in progress: {}{}{} | {:.1}% used | resume? [y/n] ",
-            SetForegroundColor(Color::Cyan),
-            &continuation.session_id[..continuation.session_id.len().min(20)],
-            ResetColor,
-            continuation.context_percentage
-        );
-        use std::io::Write;
-        std::io::stdout().flush()?;
-
-        // Read user input
-        let mut input = String::new();
-        std::io::stdin().read_line(&mut input)?;
-        let input = input.trim().to_lowercase();
-
-        if input.is_empty() || input == "y" || input == "yes" {
-            // Resume the session
-            match agent.restore_from_continuation(&continuation) {
-                Ok(true) => {
-                    G3Status::resuming(&continuation.session_id, Status::Done);
-                }
-                Ok(false) => {
-                    G3Status::resuming_summary(&continuation.session_id);
-                }
-                Err(e) => {
-                    G3Status::resuming(&continuation.session_id, Status::Error(e.to_string()));
-                    // Clear the invalid continuation
-                    let _ = g3_core::clear_continuation();
-                }
-            }
-        } else {
-            // User declined, clear the continuation
-            G3Status::info_inline("starting fresh");
-            let _ = g3_core::clear_continuation();
-        }
-      }
-    }
 
     // Skip verbose welcome when coming from agent mode (it already printed context info)
     if !from_agent_mode {

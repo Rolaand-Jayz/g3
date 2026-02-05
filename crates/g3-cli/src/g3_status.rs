@@ -144,17 +144,6 @@ impl G3Status {
         );
     }
 
-    /// Print info inline (moves cursor up, appends to previous line).
-    pub fn info_inline(message: &str) {
-        print!(
-            "\x1b[1A\x1b[999C {}... {}{}\n",
-            SetForegroundColor(Color::DarkGrey),
-            message,
-            ResetColor
-        );
-        let _ = io::stdout().flush();
-    }
-
     /// Format a status for inline use (returns formatted string).
     pub fn format_status(status: &Status) -> String {
         match status {

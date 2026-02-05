@@ -306,7 +306,6 @@ async fn handle_command(
                 cli.show_code,
                 chat_combined_content,
                 workspace_dir,
-                cli.new_session,
                 None, // agent_name (not in agent mode)
                 None, // initial_project (not supported in accumulative mode yet)
             )
