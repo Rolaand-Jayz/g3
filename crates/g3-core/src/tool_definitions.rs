@@ -11,22 +11,13 @@ use serde_json::json;
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ToolConfig {
     pub computer_control: bool,
-    pub exclude_research: bool,
 }
 
 impl ToolConfig {
     pub fn new(computer_control: bool) -> Self {
         Self {
             computer_control,
-            exclude_research: false,
         }
-    }
-
-    /// Create a config with the research tool excluded.
-    /// Used for scout agent to prevent recursion.
-    pub fn with_research_excluded(mut self) -> Self {
-        self.exclude_research = true;
-        self
     }
 }
 
@@ -34,13 +25,13 @@ impl ToolConfig {
 ///
 /// Returns a vector of Tool definitions that describe the available tools
 /// and their input schemas.
-pub fn create_tool_definitions(config: ToolConfig) -> Vec<Tool> {
+pub fn create_tool_definitions(_config: ToolConfig) -> Vec<Tool> {
     // Webdriver tools are now JIT-loaded via load_toolset("webdriver")
-    create_core_tools(config.exclude_research)
+    create_core_tools()
 }
 
 /// Create the core tools that are always available
-fn create_core_tools(exclude_research: bool) -> Vec<Tool> {
+fn create_core_tools() -> Vec<Tool> {
     let mut tools = vec![
         Tool {
             name: "shell".to_string(),
@@ -260,40 +251,6 @@ fn create_core_tools(exclude_research: bool) -> Vec<Tool> {
         }),
     });
 
-    // Conditionally add the research tool (excluded for scout agent to prevent recursion)
-    if !exclude_research {
-        tools.push(Tool {
-            name: "research".to_string(),
-            description: "Initiate web-based research on a topic. This tool is ASYNCHRONOUS - it spawns a research agent in the background and returns immediately with a research_id. Results are automatically injected into the conversation when ready. Use this when you need to research APIs, SDKs, libraries, approaches, bugs, or documentation. If you need the results before continuing, say so and yield the turn to the user. Check status with research_status tool.".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "The research question or topic to investigate. Be specific about what you need to know."
-                    }
-                },
-                "required": ["query"]
-            }),
-        });
-
-        // research_status tool - check status of pending research
-        tools.push(Tool {
-            name: "research_status".to_string(),
-            description: "Check the status of pending research tasks. Call without arguments to list all pending research, or with a research_id to check a specific task. Use this to see if research has completed before it's automatically injected.".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "research_id": {
-                        "type": "string",
-                        "description": "Optional: specific research_id to check. If omitted, lists all pending research tasks."
-                    }
-                },
-                "required": []
-            }),
-        });
-    }
-
     // Toolset loading tool - allows dynamic loading of additional tools
     tools.push(Tool {
         name: "load_toolset".to_string(),
@@ -319,45 +276,37 @@ mod tests {
 
     #[test]
     fn test_core_tools_count() {
-        let tools = create_core_tools(false);
-        // Core tools (with research): shell, background_process, read_file, read_image,
+        let tools = create_core_tools();
+        // Core tools: shell, background_process, read_file, read_image,
         // write_file, str_replace, code_search, plan_read, plan_write, plan_approve,
-        // remember, rehydrate, research, research_status, load_toolset
-        // (15 total)
-        assert_eq!(tools.len(), 15);
+        // remember, rehydrate, load_toolset
+        // (13 total - research tools are now in a loadable toolset)
+        assert_eq!(tools.len(), 13);
     }
 
     #[test]
     fn test_create_tool_definitions_core_only() {
         let config = ToolConfig::default();
         let tools = create_tool_definitions(config);
-        // 15 core tools (webdriver is now JIT-loaded)
-        assert_eq!(tools.len(), 15);
+        // 13 core tools (webdriver and research are now JIT-loaded)
+        assert_eq!(tools.len(), 13);
     }
 
     #[test]
     fn test_create_tool_definitions() {
         let config = ToolConfig::new(true);
         let tools = create_tool_definitions(config);
-        // Webdriver tools are now JIT-loaded, so only core tools are included
-        assert!(tools.len() >= 14); // At least 14 core tools
+        // Webdriver and research tools are now JIT-loaded, so only core tools are included
+        assert_eq!(tools.len(), 13);
     }
 
     #[test]
     fn test_tool_has_required_fields() {
-        let tools = create_core_tools(false);
+        let tools = create_core_tools();
         for tool in tools {
             assert!(!tool.name.is_empty(), "Tool name should not be empty");
             assert!(!tool.description.is_empty(), "Tool description should not be empty");
             assert!(tool.input_schema.is_object(), "Tool input_schema should be an object");
         }
-    }
-
-    #[test]
-    fn test_exclude_research_reduces_tool_count() {
-        let with_research = create_core_tools(false);
-        let without_research = create_core_tools(true);
-        // Excluding research removes 2 tools (research and research_status)
-        assert_eq!(with_research.len() - without_research.len(), 2);
     }
 }

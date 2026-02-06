@@ -37,6 +37,11 @@ const TOOLSET_REGISTRY: &[Toolset] = &[
         description: "Browser automation via Safari WebDriver. Start sessions, navigate, find elements, click, type, execute JavaScript, take screenshots.",
         tool_definitions_fn: create_webdriver_tools,
     },
+    Toolset {
+        name: "research",
+        description: "Initiate web-based research on a topic. This tool is ASYNCHRONOUS - it spawns a research agent in the background and returns immediately with a research_id. Results are automatically injected into the conversation when ready.",
+        tool_definitions_fn: create_research_tools,
+    },
 ];
 
 /// Get a toolset by name.
@@ -309,6 +314,42 @@ fn create_webdriver_tools() -> Vec<Tool> {
     ]
 }
 
+/// Create research tools for web-based research.
+///
+/// These tools enable asynchronous web research via a background scout agent.
+fn create_research_tools() -> Vec<Tool> {
+    vec![
+        Tool {
+            name: "research".to_string(),
+            description: "Initiate web-based research on a topic. This tool is ASYNCHRONOUS - it spawns a research agent in the background and returns immediately with a research_id. Results are automatically injected into the conversation when ready. Use this when you need to research APIs, SDKs, libraries, approaches, bugs, or documentation. If you need the results before continuing, say so and yield the turn to the user. Check status with research_status tool.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The research question or topic to investigate. Be specific about what you need to know."
+                    }
+                },
+                "required": ["query"]
+            }),
+        },
+        Tool {
+            name: "research_status".to_string(),
+            description: "Check the status of pending research tasks. Call without arguments to list all pending research, or with a research_id to check a specific task. Use this to see if research has completed before it's automatically injected.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "research_id": {
+                        "type": "string",
+                        "description": "Optional: specific research_id to check. If omitted, lists all pending research tasks."
+                    }
+                },
+                "required": []
+            }),
+        },
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -390,5 +431,34 @@ mod tests {
         assert!(tool_names.contains(&"webdriver_forward"));
         assert!(tool_names.contains(&"webdriver_refresh"));
         assert!(tool_names.contains(&"webdriver_quit"));
+    }
+
+    #[test]
+    fn test_get_toolset_research() {
+        let toolset = get_toolset("research").unwrap();
+        assert_eq!(toolset.name, "research");
+        assert!(!toolset.description.is_empty());
+        
+        let tools = toolset.get_tools();
+        assert_eq!(tools.len(), 2); // research and research_status
+        assert!(tools.iter().any(|t| t.name == "research"));
+        assert!(tools.iter().any(|t| t.name == "research_status"));
+    }
+
+    #[test]
+    fn test_research_tools_complete() {
+        let tools = create_research_tools();
+        assert_eq!(tools.len(), 2);
+        
+        let tool_names: Vec<_> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(tool_names.contains(&"research"));
+        assert!(tool_names.contains(&"research_status"));
+    }
+
+    #[test]
+    fn test_list_toolset_names_includes_research() {
+        let names = list_toolset_names();
+        assert!(names.contains(&"research"));
+        assert!(names.contains(&"webdriver"));
     }
 }
