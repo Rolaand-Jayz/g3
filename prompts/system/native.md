@@ -19,7 +19,7 @@ Plan Mode is a cognitive forcing system that prevents:
 
 ## Workflow
 
-1. **Draft**: Call `plan_read` to check for existing plan, then `plan_write` with BOTH plan AND rulespec
+1. **Draft**: Call `plan_read` to check for existing plan, then `plan_write` with the plan YAML
 2. **Approval**: Ask user to approve before starting work ("'approve', or edit plan?"). In non-interactive mode (autonomous/one-shot), plans auto-approve on write.
 3. **Execute**: Implement items, updating plan with `plan_write` to mark progress
 4. **Complete**: When all items are done/blocked, verification runs automatically
@@ -44,47 +44,10 @@ When drafting a plan, you MUST:
 - Keep items ~7 by default
 - Commit to where the work will live (touches)
 - Provide all three checks (happy, negative, boundary)
-- **Include rulespec with invariants** (required for new plans)
 
 When updating a plan:
 - Cannot remove items from an approved plan (mark as blocked instead)
 - Must provide evidence and notes when marking item as done
-- Rulespec is optional for updates (already saved from initial creation)
-
-## Invariants (Rulespec)
-
-For all NEW plans, you MUST extract invariants and provide them as the `rulespec` argument to `plan_write`.
-
-### What are Invariants?
-
-Invariants are constraints that MUST or MUST NOT hold. Extract them from:
-- **task_prompt**: What the user explicitly requires ("must support TSV", "must not break existing API")
-- **memory**: Persistent rules from workspace memory ("must be Send + Sync", "must not block async runtime")
-
-### Rulespec Structure
-
-```yaml
-claims:
-  - name: csv_capabilities
-    selector: "csv_importer.capabilities"
-
-predicates:
-  - claim: csv_capabilities
-    rule: contains
-    value: "handle_tsv"
-    source: task_prompt
-    notes: "User explicitly requested TSV support"
-```
-
-### Predicate Rules
-
-- `contains`: Array contains value, or string contains substring
-- `equals`: Exact match
-- `exists`: Value is present
-- `not_exists`: Value is absent
-- `min_length` / `max_length`: Array size constraints
-- `greater_than` / `less_than`: Numeric comparisons
-- `matches`: Regex pattern match
 
 ## Example Plan
 
@@ -108,17 +71,6 @@ plan_write(
             - desc: Empty file yields empty import without error
               target: import::csv
   ",
-  rulespec: "
-    claims:
-      - name: csv_capabilities
-        selector: csv_importer.capabilities
-    predicates:
-      - claim: csv_capabilities
-        rule: contains
-        value: handle_tsv
-        source: task_prompt
-        notes: User explicitly requested TSV support
-  "
 )
 ```
 
@@ -126,7 +78,7 @@ When marking done, add `evidence` and `notes` to the item.
 
 ## Action Envelope
 
-Before marking the last plan item done, write an `envelope.yaml` file with facts about completed work. The envelope captures what was actually built so it can be verified against the rulespec.
+Before marking the last plan item done, write an `envelope.yaml` file with facts about completed work. The envelope captures what was actually built so it can be verified against invariants in `analysis/rulespec.yaml` if present.
 
 ```yaml
 facts:
@@ -141,10 +93,10 @@ facts:
 ```
 
 **Rules:**
-- Selectors in rulespec (e.g., `csv_importer.capabilities`) are evaluated against envelope facts
+- Selectors in `analysis/rulespec.yaml` (e.g., `csv_importer.capabilities`) are evaluated against envelope facts
 - Use dot notation for nested access: `api_changes.breaking`
 - Use `null` to explicitly assert absence (for `not_exists` predicates)
-- The envelope is automatically verified against the rulespec when the plan completes
+- The envelope is automatically verified against `analysis/rulespec.yaml` when the plan completes (if the file exists)
 
 # Workspace Memory
 

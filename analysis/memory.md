@@ -1,5 +1,5 @@
 # Workspace Memory
-> Updated: 2026-02-06T00:59:11Z | Size: 20.2k chars
+> Updated: 2026-02-06T04:29:34Z | Size: 21.0k chars
 
 ### Remember Tool Wiring
 - `crates/g3-core/src/tools/memory.rs` [0..5000] - `execute_remember()`, `get_memory_path()`, `merge_memory()`
@@ -364,3 +364,13 @@ Makes tool output responsive to terminal width - no line wrapping, with 4-char r
 **Datalog Flow**:
 1. `plan_approve` → `compile_rulespec()` → saves `rulespec.compiled.json`
 2. `plan_verify` → `shadow_datalog_verify()` → loads compiled + envelope → `extract_facts()` → `execute_rules()` → `eprint!()` (shadow mode)
+
+### Rulespec Changes (2026-02-06)
+- Rulespec is no longer generated on-the-fly during `plan_write` — it's now read from `analysis/rulespec.yaml` (checked-in, hand-crafted)
+- `read_rulespec()` in `invariants.rs` now takes `&Path` (working_dir) instead of `&str` (session_id)
+- `write_rulespec()`, `get_rulespec_path()`, `format_rulespec_yaml()`, `format_rulespec_markdown()` removed from `invariants.rs`
+- `save_compiled_rulespec()`, `load_compiled_rulespec()`, `get_compiled_rulespec_path()` removed from `datalog.rs`
+- `shadow_datalog_verify()` now compiles rulespec on-the-fly at verify time, writes `rulespec.compiled.dl` and `datalog_evaluation.txt` to session dir
+- `plan_write` tool no longer accepts `rulespec` parameter
+- `plan_approve` no longer compiles rulespec
+- `format_verification_results()` now takes `working_dir: Option<&Path>` as third parameter

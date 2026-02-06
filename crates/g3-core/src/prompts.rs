@@ -58,9 +58,8 @@ Short description for providers without native calling specs:
   - Example: {\"tool\": \"plan_read\", \"args\": {}}
 
 - **plan_write**: Create or update the Plan with YAML content
-  - Format: {\"tool\": \"plan_write\", \"args\": {\"plan\": \"plan_id: my-plan\\nitems: [...]\", \"rulespec\": \"claims: [...]\\npredicates: [...]\"}}
-  - For NEW plans, rulespec is REQUIRED. For updates, it's optional.
-  - Example (new plan): {\"tool\": \"plan_write\", \"args\": {\"plan\": \"plan_id: feature-x\\nitems:\\n  - id: I1\\n    description: Add feature\\n    state: todo\\n    touches: [src/lib.rs]\\n    checks:\\n      happy: {desc: Works, target: lib}\\n      negative:\\n        - {desc: Errors, target: lib}\\n      boundary:\\n        - {desc: Edge, target: lib}\", \"rulespec\": \"claims:\\n  - name: feature\\n    selector: feature.done\\npredicates:\\n  - claim: feature\\n    rule: exists\\n    source: task_prompt\"}}
+  - Format: {\"tool\": \"plan_write\", \"args\": {\"plan\": \"plan_id: my-plan\\nitems: [...]\"}}
+  - Example (new plan): {\"tool\": \"plan_write\", \"args\": {\"plan\": \"plan_id: feature-x\\nitems:\\n  - id: I1\\n    description: Add feature\\n    state: todo\\n    touches: [src/lib.rs]\\n    checks:\\n      happy: {desc: Works, target: lib}\\n      negative:\\n        - {desc: Errors, target: lib}\\n      boundary:\\n        - {desc: Edge, target: lib}\"}}
   - Example (update): {\"tool\": \"plan_write\", \"args\": {\"plan\": \"plan_id: feature-x\\nitems:\\n  - id: I1\\n    state: done\\n    evidence: [src/lib.rs:42]\\n    notes: Implemented\"}}
 
 - **plan_approve**: Approve the current plan revision (called by user)

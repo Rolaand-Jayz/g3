@@ -622,14 +622,6 @@ items:
         - desc: Edge cases
           target: test::module"#
                 ,
-                "rulespec": r#"claims:
-  - name: test_feature
-    selector: test.done
-predicates:
-  - claim: test_feature
-    rule: exists
-    source: task_prompt
-    notes: Test invariant"#
             }),
         };
         let write_result = agent.execute_tool(&write_call).await.unwrap();

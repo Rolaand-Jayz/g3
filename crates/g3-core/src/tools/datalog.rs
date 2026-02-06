@@ -6,10 +6,10 @@
 //!
 //! ## Architecture
 //!
-//! 1. **Compilation Phase** (on plan_approve):
+//! 1. **Compilation Phase** (on-the-fly at plan_verify):
 //!    - Parse rulespec claims and predicates
 //!    - Generate datafrog relations and rules
-//!    - Store compiled representation for later execution
+//!    - Rulespec is read from `analysis/rulespec.yaml`
 //!
 //! 2. **Execution Phase** (on plan_verify):
 //!    - Extract facts from action envelope using selectors
@@ -34,7 +34,6 @@ use datafrog::{Iteration, Relation};
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value as YamlValue;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
 
 use super::invariants::{
     ActionEnvelope, InvariantSource, PredicateRule, Rulespec, Selector,
@@ -42,7 +41,6 @@ use super::invariants::{
 #[cfg(test)]
 use super::invariants::{Claim, Predicate};
 
-use crate::paths::get_session_logs_dir;
 
 // ============================================================================
 // Compiled Datalog Representation
@@ -537,33 +535,6 @@ fn evaluate_predicate_datalog(
 }
 
 // ============================================================================
-// Storage
-// ============================================================================
-
-/// Get the path to the compiled rulespec file for a session.
-pub fn get_compiled_rulespec_path(session_id: &str) -> PathBuf {
-    get_session_logs_dir(session_id).join("rulespec.compiled.json")
-}
-
-/// Save a compiled rulespec to disk.
-pub fn save_compiled_rulespec(session_id: &str, compiled: &CompiledRulespec) -> Result<()> {
-    let path = get_compiled_rulespec_path(session_id);
-    let json = serde_json::to_string_pretty(compiled)?;
-    std::fs::write(&path, json)?;
-    Ok(())
-}
-
-/// Load a compiled rulespec from disk.
-pub fn load_compiled_rulespec(session_id: &str) -> Result<Option<CompiledRulespec>> {
-    let path = get_compiled_rulespec_path(session_id);
-    if !path.exists() {
-        return Ok(None);
-    }
-    let json = std::fs::read_to_string(&path)?;
-    let compiled: CompiledRulespec = serde_json::from_str(&json)?;
-    Ok(Some(compiled))
-}
-
 // ============================================================================
 // Formatting
 // ============================================================================
