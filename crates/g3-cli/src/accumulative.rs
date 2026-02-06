@@ -3,7 +3,7 @@
 use anyhow::Result;
 use crossterm::style::{Color, ResetColor, SetForegroundColor};
 use rustyline::error::ReadlineError;
-use rustyline::DefaultEditor;
+use rustyline::{Cmd, Config, Editor, EventHandler, KeyCode, KeyEvent, Modifiers};
 use std::path::PathBuf;
 use tracing::error;
 
@@ -47,7 +47,14 @@ pub async fn run_accumulative_mode(
     output.print("");
 
     // Initialize rustyline editor with history
-    let mut rl = DefaultEditor::new()?;
+    let config = Config::builder()
+        .completion_type(rustyline::CompletionType::List)
+        .build();
+    let mut rl = Editor::<(), rustyline::history::DefaultHistory>::with_config(config)?;
+
+    // Bind Alt+Enter to insert a newline (for multi-line input)
+    rl.bind_sequence(KeyEvent(KeyCode::Enter, Modifiers::ALT), EventHandler::Simple(Cmd::Newline));
+
     let history_file = dirs::home_dir().map(|mut path| {
         path.push(".g3_accumulative_history");
         path

@@ -87,11 +87,21 @@ pub fn format_input(input: &str) -> String {
 
 /// Calculate the number of visual lines that text occupies in a terminal.
 /// Accounts for line wrapping and the cursor position after typing.
-pub fn calculate_visual_lines(text_len: usize, term_width: usize) -> usize {
+/// For multi-line input (with embedded newlines), calculates lines for each segment.
+pub fn calculate_visual_lines(text: &str, term_width: usize) -> usize {
     if term_width == 0 {
         return 1;
     }
-    let mut visual_lines = text_len.div_ceil(term_width).max(1);
+    
+    // Split by newlines and calculate visual lines for each segment
+    let mut visual_lines = 0;
+    for (i, line) in text.split('\n').enumerate() {
+        let line_len = if i == 0 { line.len() } else { line.len() };
+        visual_lines += line_len.div_ceil(term_width).max(1);
+    }
+    visual_lines = visual_lines.max(1);
+    
+    let text_len = text.len();
     // When text exactly fills the terminal width (or a multiple), the cursor
     // wraps to the next line, so we need to clear one additional line
     if text_len > 0 && text_len % term_width == 0 {
@@ -111,7 +121,8 @@ pub fn reprint_formatted_input(input: &str, prompt: &str) {
 
     // Calculate visual lines (prompt + input may wrap across terminal rows)
     let term_width = terminal::size().map(|(w, _)| w as usize).unwrap_or(80);
-    let visual_lines = calculate_visual_lines(prompt.len() + input.len(), term_width);
+    let full_input = format!("{}{}", prompt, input);
+    let visual_lines = calculate_visual_lines(&full_input, term_width);
 
     // Move up and clear each line
     for _ in 0..visual_lines {
@@ -262,28 +273,43 @@ mod tests {
     #[test]
     fn test_visual_lines_shorter_than_width() {
         // 50 chars on 80-char terminal = 1 line
-        assert_eq!(calculate_visual_lines(50, 80), 1);
+        let text = "a".repeat(50);
+        assert_eq!(calculate_visual_lines(&text, 80), 1);
     }
     
     #[test]
     fn test_visual_lines_longer_than_width() {
         // 100 chars on 80-char terminal = 2 lines (wraps once)
-        assert_eq!(calculate_visual_lines(100, 80), 2);
+        let text = "a".repeat(100);
+        assert_eq!(calculate_visual_lines(&text, 80), 2);
         // 170 chars on 80-char terminal = 3 lines
-        assert_eq!(calculate_visual_lines(170, 80), 3);
+        let text = "a".repeat(170);
+        assert_eq!(calculate_visual_lines(&text, 80), 3);
     }
     
     #[test]
     fn test_visual_lines_exactly_equals_width() {
         // 80 chars on 80-char terminal = 2 lines (cursor wraps to next line)
-        assert_eq!(calculate_visual_lines(80, 80), 2);
+        let text = "a".repeat(80);
+        assert_eq!(calculate_visual_lines(&text, 80), 2);
         // 160 chars on 80-char terminal = 3 lines (fills 2 lines exactly, cursor on 3rd)
-        assert_eq!(calculate_visual_lines(160, 80), 3);
+        let text = "a".repeat(160);
+        assert_eq!(calculate_visual_lines(&text, 80), 3);
     }
     
     #[test]
     fn test_visual_lines_empty_input() {
         // Empty input should still be 1 line (the prompt line)
-        assert_eq!(calculate_visual_lines(0, 80), 1);
+        assert_eq!(calculate_visual_lines("", 80), 1);
+    }
+
+    #[test]
+    fn test_visual_lines_multiline_input() {
+        // Multi-line input with embedded newlines
+        assert_eq!(calculate_visual_lines("line1\nline2", 80), 2);
+        assert_eq!(calculate_visual_lines("line1\nline2\nline3", 80), 3);
+        // First line wraps, second doesn't
+        let text = format!("{}\nshort", "a".repeat(100));
+        assert_eq!(calculate_visual_lines(&text, 80), 3); // 100 chars = 2 lines, + 1 for "short"
     }
 }

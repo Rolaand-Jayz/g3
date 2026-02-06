@@ -3,7 +3,7 @@
 use anyhow::Result;
 use crossterm::style::{Color, ResetColor, SetForegroundColor};
 use rustyline::error::ReadlineError;
-use rustyline::{Config, Editor};
+use rustyline::{Cmd, Config, Editor, EventHandler, KeyCode, KeyEvent, Modifiers};
 use crate::completion::G3Helper;
 use std::path::Path;
 use tracing::{debug, error};
@@ -225,6 +225,10 @@ pub async fn run_interactive<W: UiWriter>(
         .build();
     let mut rl = Editor::with_config(config)?;
     rl.set_helper(Some(G3Helper::new()));
+
+    // Bind Alt+Enter to insert a newline (for multi-line input)
+    // Note: Shift+Enter is not distinguishable in standard terminals
+    rl.bind_sequence(KeyEvent(KeyCode::Enter, Modifiers::ALT), EventHandler::Simple(Cmd::Newline));
 
     // Try to load history from a file in the user's home directory
     let history_file = dirs::home_dir().map(|mut path| {
