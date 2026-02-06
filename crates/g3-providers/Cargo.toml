@@ -8,7 +8,6 @@ description = "LLM provider abstractions for G3 AI coding agent"
 tokio = { workspace = true }
 reqwest = { workspace = true }
 anyhow = { workspace = true }
-thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }

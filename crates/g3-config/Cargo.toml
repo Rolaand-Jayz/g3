@@ -8,7 +8,6 @@ description = "Configuration management for G3 AI coding agent"
 config = { workspace = true }
 serde = { workspace = true }
 anyhow = { workspace = true }
-thiserror = { workspace = true }
 toml = "0.8"
 shellexpand = "3.0"
 dirs = "5.0"
