@@ -47,6 +47,9 @@ tree-sitter-racket = "0.24"
 streaming-iterator = "0.1"
 walkdir = "2.4"
 
+# Datalog engine for invariant verification
+datafrog = "2.0.1"
+
 base64 = "0.22.1"
 
 [dev-dependencies]

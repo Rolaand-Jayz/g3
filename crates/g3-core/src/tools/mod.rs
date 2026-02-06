@@ -12,6 +12,7 @@
 
 pub mod executor;
 pub mod acd;
+pub mod datalog;
 pub mod file_ops;
 pub mod invariants;
 pub mod memory;

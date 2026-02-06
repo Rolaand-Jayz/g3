@@ -21,6 +21,8 @@ use crate::ToolCall;
 use super::executor::ToolContext;
 
 use super::invariants::{format_envelope_markdown, format_rulespec_markdown, get_envelope_path, get_rulespec_path, read_envelope, read_rulespec, write_rulespec, Rulespec};
+use super::datalog::{compile_rulespec, save_compiled_rulespec, format_datalog_results};
+use super::datalog::{load_compiled_rulespec, extract_facts, execute_rules};
 
 // ============================================================================
 // Plan Schema
@@ -708,6 +710,62 @@ pub fn plan_verify(plan: &Plan, working_dir: Option<&str>) -> PlanVerification {
     }
 }
 
+/// Shadow datalog verification - runs datalog rules and writes to evaluation file.
+/// This is for dry-run/shadow testing - results are written to
+/// `.g3/sessions/<id>/datalog_evaluation.txt`, NOT injected into context window.
+fn shadow_datalog_verify(session_id: &str) {
+    // Load compiled rulespec
+    let compiled = match load_compiled_rulespec(session_id) {
+        Ok(Some(c)) => c,
+        Ok(None) => {
+            eprintln!("\n⚠️  [SHADOW] No compiled rulespec found - skipping datalog verification");
+            return;
+        }
+        Err(e) => {
+            eprintln!("\n⚠️  [SHADOW] Failed to load compiled rulespec: {}", e);
+            return;
+        }
+    };
+
+    if compiled.is_empty() {
+        eprintln!("\n⚠️  [SHADOW] Compiled rulespec has no predicates - skipping datalog verification");
+        return;
+    }
+
+    // Load envelope
+    let envelope = match read_envelope(session_id) {
+        Ok(Some(e)) => e,
+        Ok(None) => {
+            eprintln!("\n⚠️  [SHADOW] No envelope found - skipping datalog verification");
+            return;
+        }
+        Err(e) => {
+            eprintln!("\n⚠️  [SHADOW] Failed to load envelope: {}", e);
+            return;
+        }
+    };
+
+    // Extract facts from envelope
+    let facts = extract_facts(&envelope, &compiled);
+
+    // Execute datalog rules
+    let result = execute_rules(&compiled, &facts);
+
+    // Format results
+    let output = format_datalog_results(&result);
+
+    // Write to evaluation file (shadow mode - not in context window)
+    let eval_path = get_session_logs_dir(session_id).join("datalog_evaluation.txt");
+    match std::fs::write(&eval_path, &output) {
+        Ok(_) => {
+            eprintln!("📊 Datalog evaluation written to: {}", eval_path.display());
+        }
+        Err(e) => {
+            eprintln!("⚠️  Failed to write datalog evaluation: {}", e);
+        }
+    }
+}
+
 /// Format verification results as a string for display.
 /// Uses loud formatting for warnings and errors.
 /// If session_id is provided, also prints rulespec and envelope file locations.
@@ -767,6 +825,9 @@ pub fn format_verification_results(verification: &PlanVerification, session_id: 
         output.push_str(&format!("  {} Envelope: {}\n", envelope_status, envelope_path.display()));
         
         output.push_str("\n");
+
+        // Shadow datalog verification - print to stderr, NOT included in tool output
+        shadow_datalog_verify(sid);
     }
     
     output.push_str(&"═".repeat(60));
@@ -1007,14 +1068,43 @@ pub async fn execute_plan_approve<W: UiWriter>(
     // Approve the plan
     plan.approve();
 
+    // Compile rulespec to datalog on approval
+    let compile_message;
+    match read_rulespec(session_id) {
+        Ok(Some(rulespec)) => {
+            match compile_rulespec(&rulespec, &plan.plan_id, plan.revision) {
+                Ok(compiled) => {
+                    if let Err(e) = save_compiled_rulespec(session_id, &compiled) {
+                        compile_message = format!("\n⚠️ Failed to save compiled rulespec: {}", e);
+                    } else {
+                        compile_message = format!(
+                            "\n📜 Compiled {} invariant(s) to datalog rules.",
+                            compiled.predicates.len()
+                        );
+                    }
+                }
+                Err(e) => {
+                    compile_message = format!("\n⚠️ Failed to compile rulespec: {}", e);
+                }
+            }
+        }
+        Ok(None) => {
+            compile_message = "\n⚠️ No rulespec found - datalog verification will be skipped.".to_string();
+        }
+        Err(e) => {
+            compile_message = format!("\n⚠️ Failed to read rulespec: {}", e);
+        }
+    }
+
     // Write back
     if let Err(e) = write_plan(session_id, &plan) {
         return Ok(format!("❌ Failed to save approved plan: {}", e));
     }
 
     Ok(format!(
-        "✅ Plan approved at revision {}. You may now begin implementation.",
-        plan.revision
+        "✅ Plan approved at revision {}. You may now begin implementation.{}",
+        plan.revision,
+        compile_message
     ))
 }
 

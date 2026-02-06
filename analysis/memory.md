@@ -1,5 +1,5 @@
 # Workspace Memory
-> Updated: 2026-02-05T09:15:01Z | Size: 17.9k chars
+> Updated: 2026-02-06T00:59:11Z | Size: 20.2k chars
 
 ### Remember Tool Wiring
 - `crates/g3-core/src/tools/memory.rs` [0..5000] - `execute_remember()`, `get_memory_path()`, `merge_memory()`
@@ -341,3 +341,26 @@ Makes tool output responsive to terminal width - no line wrapping, with 4-char r
   - `print_tool_output_line()` [447..454] - uses clip_line() for output lines
   - `print_tool_output_header()` [293..410] - uses compress_path/compress_command
   - `print_tool_compact()` [475..635] - width-aware compact tool display
+
+### Datalog Invariant Verification
+- `crates/g3-core/src/tools/datalog.rs` [0..37000]
+  - `CompiledPredicate` [47..67] - id, claim_name, selector, rule, expected_value, source, notes
+  - `CompiledRulespec` [70..80] - plan_id, compiled_at_revision, predicates, claims
+  - `compile_rulespec()` [88..140] - validates selectors, builds claim lookup, converts to CompiledPredicate
+  - `Fact` [170..180] - claim_name, value (extracted from envelope)
+  - `extract_facts()` [190..210] - uses Selector to navigate envelope YAML
+  - `extract_values_recursive()` [215..250] - handles arrays/objects/scalars, adds __length facts
+  - `DatalogPredicateResult` [255..275] - id, claim_name, rule, expected_value, passed, reason, source, notes
+  - `DatalogExecutionResult` [280..295] - predicate_results, fact_count, passed_count, failed_count
+  - `execute_rules()` [300..340] - builds fact lookup, uses datafrog Iteration, evaluates predicates
+  - `evaluate_predicate_datalog()` [345..480] - handles all PredicateRule types
+  - `get_compiled_rulespec_path()` [500..505] - `.g3/sessions/<id>/rulespec.compiled.json`
+  - `save_compiled_rulespec()`, `load_compiled_rulespec()` [510..530] - JSON serialization
+  - `format_datalog_results()` [540..620] - formats results for shadow mode display
+- `crates/g3-core/src/tools/plan.rs`
+  - `shadow_datalog_verify()` [716..760] - loads compiled rulespec + envelope, runs datalog, prints to stderr
+  - `execute_plan_approve()` [1030..1095] - compiles rulespec on approval, saves to rulespec.compiled.json
+
+**Datalog Flow**:
+1. `plan_approve` → `compile_rulespec()` → saves `rulespec.compiled.json`
+2. `plan_verify` → `shadow_datalog_verify()` → loads compiled + envelope → `extract_facts()` → `execute_rules()` → `eprint!()` (shadow mode)
