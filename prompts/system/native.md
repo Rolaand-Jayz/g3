@@ -78,7 +78,7 @@ When marking done, add `evidence` and `notes` to the item.
 
 ## Action Envelope
 
-Before marking the last plan item done, write an `envelope.yaml` file with facts about completed work. The envelope captures what was actually built so it can be verified against invariants in `analysis/rulespec.yaml` if present.
+Before marking the last plan item done, call `write_envelope` with facts about completed work. The envelope captures what was actually built so it can be verified against invariants in `analysis/rulespec.yaml` if present. The tool writes the envelope and runs datalog verification automatically.
 
 ```yaml
 facts:
@@ -96,7 +96,7 @@ facts:
 - Selectors in `analysis/rulespec.yaml` (e.g., `csv_importer.capabilities`) are evaluated against envelope facts
 - Use dot notation for nested access: `api_changes.breaking`
 - Use `null` to explicitly assert absence (for `not_exists` predicates)
-- The envelope is automatically verified against `analysis/rulespec.yaml` when the plan completes (if the file exists)
+- `write_envelope` verifies facts against `analysis/rulespec.yaml` (if present) and `plan_verify()` confirms the envelope was written
 
 # Workspace Memory
 

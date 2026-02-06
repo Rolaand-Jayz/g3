@@ -559,17 +559,32 @@ items:
         actual_session_id
     }
 
-    /// Test: plan_verify compiles datalog rules on-the-fly from analysis/rulespec.yaml
-    /// and writes .dl + evaluation files to session dir
+    /// Test: write_envelope compiles datalog rules on-the-fly from analysis/rulespec.yaml
+    /// and writes .dl + evaluation files to session dir via verify_envelope
     #[tokio::test]
     #[serial]
     async fn test_plan_verify_with_analysis_rulespec() {
         let temp_dir = TempDir::new().unwrap();
         let mut agent = create_test_agent(&temp_dir).await;
 
-        let session_id = setup_complete_plan_with_envelope(
-            &mut agent, &temp_dir, "datalog-rulespec-test"
-        ).await;
+        agent.init_session_id_for_test("datalog-rulespec-test");
+        let session_id = agent.get_session_id().unwrap().to_string();
+
+        // Write a plan and approve it
+        let write_call = make_tool_call(
+            "plan_write",
+            serde_json::json!({
+                "plan": "plan_id: datalog-test\nrevision: 1\nitems:\n  - id: I1\n    description: Implement feature\n    state: todo\n    touches: [src/lib.rs]\n    checks:\n      happy: {desc: Works, target: lib}\n      negative: [{desc: Errors, target: lib}]\n      boundary: [{desc: Edge, target: lib}]"
+            }),
+        );
+        agent.execute_tool(&write_call).await.unwrap();
+        let approve_call = make_tool_call("plan_approve", serde_json::json!({}));
+        agent.execute_tool(&approve_call).await.unwrap();
+
+        // Create a dummy evidence file
+        let src_dir = temp_dir.path().join("src");
+        fs::create_dir_all(&src_dir).unwrap();
+        fs::write(src_dir.join("lib.rs"), "// test file").unwrap();
 
         // Write analysis/rulespec.yaml
         let analysis_dir = temp_dir.path().join("analysis");
@@ -588,15 +603,15 @@ predicates:
         )
         .unwrap();
 
-        // Mark item done - this triggers plan_verify + shadow_datalog_verify
-        let done_call = make_tool_call(
-            "plan_write",
+        // Call write_envelope - this triggers verify_envelope which writes artifacts
+        let envelope_call = make_tool_call(
+            "write_envelope",
             serde_json::json!({
-                "plan": "plan_id: datalog-test\nrevision: 2\nitems:\n  - id: I1\n    description: Implement feature\n    state: done\n    touches: [src/lib.rs]\n    checks:\n      happy: {desc: Works, target: lib}\n      negative: [{desc: Errors, target: lib}]\n      boundary: [{desc: Edge, target: lib}]\n    evidence: [src/lib.rs:1]\n    notes: Implemented the feature"
+                "facts": "facts:\n  feature:\n    done: true\n    capabilities: [handle_csv, handle_tsv]\n    file: src/lib.rs"
             }),
         );
-        let result = agent.execute_tool(&done_call).await.unwrap();
-        assert!(result.contains("VERIFICATION"), "Should trigger verification: {}", result);
+        let result = agent.execute_tool(&envelope_call).await.unwrap();
+        assert!(result.contains("Envelope written"), "Should confirm envelope written: {}", result);
 
         // Check that .dl and evaluation files were written to session dir
         let session_dir = temp_dir
@@ -651,16 +666,31 @@ predicates:
             "No evaluation file should exist without rulespec");
     }
 
-    /// Test: rulespec predicate that fails against envelope shows failure
+    /// Test: write_envelope with rulespec predicate that fails shows failure
     #[tokio::test]
     #[serial]
     async fn test_plan_verify_rulespec_failure() {
         let temp_dir = TempDir::new().unwrap();
         let mut agent = create_test_agent(&temp_dir).await;
 
-        let session_id = setup_complete_plan_with_envelope(
-            &mut agent, &temp_dir, "datalog-fail-test"
-        ).await;
+        agent.init_session_id_for_test("datalog-fail-test");
+        let session_id = agent.get_session_id().unwrap().to_string();
+
+        // Write a plan and approve it
+        let write_call = make_tool_call(
+            "plan_write",
+            serde_json::json!({
+                "plan": "plan_id: datalog-test\nrevision: 1\nitems:\n  - id: I1\n    description: Implement feature\n    state: todo\n    touches: [src/lib.rs]\n    checks:\n      happy: {desc: Works, target: lib}\n      negative: [{desc: Errors, target: lib}]\n      boundary: [{desc: Edge, target: lib}]"
+            }),
+        );
+        agent.execute_tool(&write_call).await.unwrap();
+        let approve_call = make_tool_call("plan_approve", serde_json::json!({}));
+        agent.execute_tool(&approve_call).await.unwrap();
+
+        // Create a dummy evidence file
+        let src_dir = temp_dir.path().join("src");
+        fs::create_dir_all(&src_dir).unwrap();
+        fs::write(src_dir.join("lib.rs"), "// test file").unwrap();
 
         // Write a rulespec that will FAIL (expects a fact that doesn't exist)
         let analysis_dir = temp_dir.path().join("analysis");
@@ -679,14 +709,14 @@ predicates:
         )
         .unwrap();
 
-        // Mark item done
-        let done_call = make_tool_call(
-            "plan_write",
+        // Call write_envelope - this triggers verify_envelope
+        let envelope_call = make_tool_call(
+            "write_envelope",
             serde_json::json!({
-                "plan": "plan_id: datalog-test\nrevision: 2\nitems:\n  - id: I1\n    description: Implement feature\n    state: done\n    touches: [src/lib.rs]\n    checks:\n      happy: {desc: Works, target: lib}\n      negative: [{desc: Errors, target: lib}]\n      boundary: [{desc: Edge, target: lib}]\n    evidence: [src/lib.rs:1]\n    notes: Implemented the feature"
+                "facts": "facts:\n  feature:\n    done: true\n    capabilities: [handle_csv, handle_tsv]\n    file: src/lib.rs"
             }),
         );
-        agent.execute_tool(&done_call).await.unwrap();
+        agent.execute_tool(&envelope_call).await.unwrap();
 
         // Check evaluation file shows failure
         let session_dir = temp_dir

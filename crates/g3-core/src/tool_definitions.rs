@@ -190,6 +190,22 @@ fn create_core_tools() -> Vec<Tool> {
         }),
     });
 
+    // Action Envelope tool
+    tools.push(Tool {
+        name: "write_envelope".to_string(),
+        description: "Write the action envelope for the current plan. Call this as your final step before marking the last plan item done. The envelope captures facts about completed work and is verified against analysis/rulespec.yaml if present.".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "facts": {
+                    "type": "string",
+                    "description": "The envelope facts as YAML. A map of named fact groups, each containing evidence about completed work (capabilities, files, tests, etc.)."
+                }
+            },
+            "required": ["facts"]
+        }),
+    });
+
     tools.push(Tool {
         name: "plan_write".to_string(),
         description: "Create or update the Plan for this session. Provide the plan as YAML with plan_id, revision, and items array.".to_string(),
@@ -275,17 +291,17 @@ mod tests {
         let tools = create_core_tools();
         // Core tools: shell, background_process, read_file, read_image,
         // write_file, str_replace, code_search, plan_read, plan_write, plan_approve,
-        // remember, rehydrate, load_toolset
-        // (13 total - research tools are now in a loadable toolset)
-        assert_eq!(tools.len(), 13);
+        // remember, rehydrate, load_toolset, write_envelope
+        // (14 total - research tools are now in a loadable toolset)
+        assert_eq!(tools.len(), 14);
     }
 
     #[test]
     fn test_create_tool_definitions_core_only() {
         let config = ToolConfig::default();
         let tools = create_tool_definitions(config);
-        // 13 core tools (webdriver and research are now JIT-loaded)
-        assert_eq!(tools.len(), 13);
+        // 14 core tools (webdriver and research are now JIT-loaded)
+        assert_eq!(tools.len(), 14);
     }
 
     #[test]
@@ -293,7 +309,7 @@ mod tests {
         let config = ToolConfig::new(true);
         let tools = create_tool_definitions(config);
         // Webdriver and research tools are now JIT-loaded, so only core tools are included
-        assert_eq!(tools.len(), 13);
+        assert_eq!(tools.len(), 14);
     }
 
     #[test]

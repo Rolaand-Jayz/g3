@@ -1,5 +1,5 @@
 # Workspace Memory
-> Updated: 2026-02-06T04:29:34Z | Size: 21.0k chars
+> Updated: 2026-02-06T05:06:29Z | Size: 22.0k chars
 
 ### Remember Tool Wiring
 - `crates/g3-core/src/tools/memory.rs` [0..5000] - `execute_remember()`, `get_memory_path()`, `merge_memory()`
@@ -374,3 +374,17 @@ Makes tool output responsive to terminal width - no line wrapping, with 4-char r
 - `plan_write` tool no longer accepts `rulespec` parameter
 - `plan_approve` no longer compiles rulespec
 - `format_verification_results()` now takes `working_dir: Option<&Path>` as third parameter
+
+### Write Envelope Tool
+- `crates/g3-core/src/tools/envelope.rs` [0..184]
+  - `execute_write_envelope()` [37..79] - parses YAML facts, writes envelope.yaml, calls verify_envelope()
+  - `verify_envelope()` [93..183] - compiles rulespec, extracts facts, runs datalog, writes .dl + evaluation artifacts (shadow mode)
+- `crates/g3-core/src/tools/mod.rs` [16] - `pub mod envelope;`
+- `crates/g3-core/src/tool_definitions.rs` [266..282] - write_envelope tool definition (facts parameter)
+- `crates/g3-core/src/tool_dispatch.rs` [41..43] - write_envelope dispatch case
+- `prompts/system/native.md` [78..100] - Action Envelope section references write_envelope tool
+- Tool count: 14 (was 13)
+
+**Workflow change**: `write_envelope` → `verify_envelope()` → datalog shadow, then `plan_write(done)` → `plan_verify()` → checks envelope exists
+- `shadow_datalog_verify()` removed from `plan.rs`
+- `format_verification_results()` no longer runs datalog, only checks envelope existence

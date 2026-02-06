@@ -7,7 +7,7 @@ use anyhow::Result;
 use tracing::{debug, warn};
 
 use crate::tools::executor::ToolContext;
-use crate::tools::{acd, file_ops, memory, misc, plan, research, shell, toolsets, webdriver};
+use crate::tools::{acd, envelope, file_ops, memory, misc, plan, research, shell, toolsets, webdriver};
 use crate::ui_writer::UiWriter;
 use crate::ToolCall;
 
@@ -36,6 +36,9 @@ pub async fn dispatch_tool<W: UiWriter>(
         "plan_read" => plan::execute_plan_read(tool_call, ctx).await,
         "plan_write" => plan::execute_plan_write(tool_call, ctx).await,
         "plan_approve" => plan::execute_plan_approve(tool_call, ctx).await,
+
+        // Action Envelope
+        "write_envelope" => envelope::execute_write_envelope(tool_call, ctx).await,
 
         // Miscellaneous tools
         "code_search" => misc::execute_code_search(tool_call, ctx).await,

@@ -12,6 +12,7 @@ use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::PathBuf;
+use std::path::Path;
 use tracing::debug;
 
 use crate::paths::{ensure_session_dir, get_session_logs_dir};
@@ -20,10 +21,7 @@ use crate::ToolCall;
 
 use super::executor::ToolContext;
 
-use std::path::Path;
-use super::invariants::{format_envelope_markdown, get_envelope_path, read_envelope, read_rulespec};
-use super::datalog::{compile_rulespec, format_datalog_results};
-use super::datalog::{extract_facts, execute_rules};
+use super::invariants::{format_envelope_markdown, get_envelope_path, read_envelope};
 
 // ============================================================================
 // Plan Schema
@@ -711,85 +709,11 @@ pub fn plan_verify(plan: &Plan, working_dir: Option<&str>) -> PlanVerification {
     }
 }
 
-/// Shadow datalog verification - runs datalog rules and writes to evaluation file.
-/// This is for dry-run/shadow testing - results are written to
-/// `.g3/sessions/<id>/datalog_evaluation.txt`, NOT injected into context window.
-fn shadow_datalog_verify(session_id: &str, working_dir: &Path) {
-    // Read rulespec from analysis/rulespec.yaml
-    let rulespec = match read_rulespec(working_dir) {
-        Ok(Some(rs)) => rs,
-        Ok(None) => {
-            eprintln!("\nℹ️  No analysis/rulespec.yaml found - skipping datalog verification");
-            return;
-        }
-        Err(e) => {
-            eprintln!("\n⚠️  Failed to read analysis/rulespec.yaml: {}", e);
-            return;
-        }
-    };
-
-    // Compile rulespec on-the-fly
-    let compiled = match compile_rulespec(&rulespec, "plan-verify", 0) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("\n⚠️  Failed to compile rulespec: {}", e);
-            return;
-        }
-    };
-
-    if compiled.is_empty() {
-        eprintln!("\nℹ️  Rulespec has no predicates - skipping datalog verification");
-        return;
-    }
-
-    // Load envelope
-    let envelope = match read_envelope(session_id) {
-        Ok(Some(e)) => e,
-        Ok(None) => {
-            eprintln!("\n⚠️  No envelope found - skipping datalog verification");
-            return;
-        }
-        Err(e) => {
-            eprintln!("\n⚠️  Failed to load envelope: {}", e);
-            return;
-        }
-    };
-
-    // Extract facts from envelope
-    let facts = extract_facts(&envelope, &compiled);
-
-    // Execute datalog rules
-    let result = execute_rules(&compiled, &facts);
-
-    // Format results
-    let output = format_datalog_results(&result);
-
-    let session_dir = get_session_logs_dir(session_id);
-
-    // Write compiled rules to .dl file
-    let dl_path = session_dir.join("rulespec.compiled.dl");
-    let compiled_yaml = serde_yaml::to_string(&compiled).unwrap_or_default();
-    if let Err(e) = std::fs::write(&dl_path, &compiled_yaml) {
-        eprintln!("⚠️  Failed to write compiled rules: {}", e);
-    }
-
-    // Write evaluation report
-    let eval_path = session_dir.join("datalog_evaluation.txt");
-    match std::fs::write(&eval_path, &output) {
-        Ok(_) => {
-            eprintln!("📊 Compiled rules: {}", dl_path.display());
-            eprintln!("📊 Evaluation report: {}", eval_path.display());
-        }
-        Err(e) => {
-            eprintln!("⚠️  Failed to write datalog evaluation: {}", e);
-        }
-    }
-}
 
 /// Format verification results as a string for display.
 /// Uses loud formatting for warnings and errors.
-/// If session_id is provided, also prints envelope file location and runs datalog verification.
-pub fn format_verification_results(verification: &PlanVerification, session_id: Option<&str>, working_dir: Option<&Path>) -> String {
+/// If session_id is provided, also checks that envelope.yaml exists at the expected path.
+pub fn format_verification_results(verification: &PlanVerification, session_id: Option<&str>, _working_dir: Option<&Path>) -> String {
     let mut output = String::new();
     let (warnings, errors) = verification.count_issues();
     
@@ -841,11 +765,6 @@ pub fn format_verification_results(verification: &PlanVerification, session_id: 
 
         output.push_str("\n");
 
-        // Shadow datalog verification - print to stderr, NOT included in tool output
-        let effective_wd = working_dir
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-        shadow_datalog_verify(sid, &effective_wd);
     }
     
     output.push_str(&"═".repeat(60));
