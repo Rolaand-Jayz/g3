@@ -367,10 +367,6 @@ pub async fn handle_command<W: UiWriter>(
 
                             // Store active project
                             *active_project = Some(project);
-
-                            // Auto-submit the project status prompt
-                            let prompt = "what is the current state of the project? and what is your suggested next best step?";
-                            execute_task_with_retry(agent, prompt, show_prompt, show_code, output).await;
                         } else {
                             output.print("❌ Failed to set project content in agent context.");
                         }
