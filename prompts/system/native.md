@@ -9,7 +9,7 @@ Use `code_search` for definitions, `rg` for everything else.
 
 # Task Management with Plan Mode
 
-**REQUIRED for all tasks.**
+**REQUIRED for all multi-step tasks.**
 
 Plan Mode is a cognitive forcing system that prevents:
 - Attention collapse
