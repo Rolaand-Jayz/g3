@@ -336,6 +336,13 @@ impl Highlighter for G3Helper {
         prompt: &'p str,
         _default: bool,
     ) -> std::borrow::Cow<'b, str> {
+        // Plan mode prompt: colorize "[plan mode]" in magenta
+        if prompt.contains("[plan mode]") {
+            return std::borrow::Cow::Owned(
+                prompt.replace("[plan mode]", "\x1b[35m[plan mode]\x1b[0m")
+            );
+        }
+        
         // If prompt contains " | ", colorize from "|" to ">" in blue
         if let Some(pipe_pos) = prompt.find(" | ") {
             if let Some(gt_pos) = prompt.rfind('>') {
@@ -550,7 +557,29 @@ mod tests {
         let (_, completions) = helper.complete(line, pos, &ctx).unwrap();
         assert_eq!(completions.len(), 0, "Non-matching prefix should return empty");
     }
-    
+
+    #[test]
+    fn test_highlight_prompt_plan_mode() {
+        let helper = G3Helper::new();
+        
+        // Plan mode prompt should be colorized with magenta
+        let prompt = " [plan mode] >> ";
+        let highlighted = helper.highlight_prompt(prompt, false);
+        assert!(highlighted.contains("\x1b[35m"), "Plan mode should use magenta color");
+        assert!(highlighted.contains("[plan mode]"), "Should contain [plan mode] text");
+        assert!(highlighted.contains("\x1b[0m"), "Should reset color");
+    }
+
+    #[test]
+    fn test_highlight_prompt_normal_unchanged() {
+        let helper = G3Helper::new();
+        
+        // Normal prompt without project should be unchanged
+        let prompt = "g3> ";
+        let highlighted = helper.highlight_prompt(prompt, false);
+        assert_eq!(highlighted.as_ref(), prompt, "Normal prompt should be unchanged");
+    }
+
     #[test]
     fn test_resume_completion_graceful_no_panic() {
         let helper = G3Helper::new();

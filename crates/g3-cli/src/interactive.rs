@@ -23,7 +23,7 @@ use crate::task_execution::execute_task_with_retry;
 use crate::utils::display_context_progress;
 
 /// Plan mode prompt string.
-const PLAN_MODE_PROMPT: &str = " >> ";
+const PLAN_MODE_PROMPT: &str = " [plan mode] >> ";
 
 /// Build the interactive prompt string.
 ///
@@ -482,16 +482,16 @@ mod tests {
     #[test]
     fn test_build_prompt_plan_mode() {
         let prompt = build_prompt(false, true, None, &None);
-        assert_eq!(prompt, " >> ");
+        assert_eq!(prompt, " [plan mode] >> ");
         
         // Plan mode takes precedence over agent name
         let prompt = build_prompt(false, true, Some("butler"), &None);
-        assert_eq!(prompt, " >> ");
+        assert_eq!(prompt, " [plan mode] >> ");
         
         // Plan mode takes precedence over project
         let project = Some(create_test_project("myapp"));
         let prompt = build_prompt(false, true, None, &project);
-        assert_eq!(prompt, " >> ");
+        assert_eq!(prompt, " [plan mode] >> ");
     }
 
     #[test]
