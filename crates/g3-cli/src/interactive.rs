@@ -10,7 +10,6 @@ use tracing::{debug, error};
 
 use g3_core::ui_writer::UiWriter;
 use g3_core::Agent;
-use g3_core::ToolCall;
 
 use crate::commands::{handle_command, CommandResult};
 use crate::display::{LoadedContent, print_loaded_status, print_workspace_path};
@@ -60,63 +59,6 @@ pub fn prepare_plan_mode_input(input: &str, is_first_plan_message: bool, in_plan
     } else {
         // No modification needed
         (input.to_string(), false)
-    }
-}
-
-/// Check if the input is an approval command (for plan mode).
-///
-/// Recognizes: "a", "approve", "approved", and common misspellings.
-pub fn is_approval_input(input: &str) -> bool {
-    let normalized = input.trim().to_lowercase();
-    // Strip trailing punctuation (!, ., ,)
-    let normalized = normalized.trim_end_matches(|c| c == '!' || c == '.' || c == ',');
-
-    // Exact matches
-    if matches!(normalized, "a" | "approve" | "approved" | "yes" | "y" | "ok") {
-        return true;
-    }
-    
-    // Common misspellings of "approve" / "approved"
-    let misspellings = [
-        "approv",      // missing 'e'
-        "aprove",      // missing 'p'
-        "aproved",     // missing 'p'
-        "aprrove",     // transposed
-        "appprove",    // extra 'p'
-        "apporve",     // transposed
-        "approev",     // transposed
-        "approvd",     // missing 'e'
-        "approed",     // missing 'v'
-        "approvee",    // extra 'e'
-        "approveed",   // extra 'e'
-    ];
-    
-    misspellings.iter().any(|&m| normalized == m)
-}
-
-/// Execute plan_approve tool directly without going through the LLM.
-///
-/// Returns (success, message) where success indicates if the plan was approved.
-async fn execute_plan_approve_directly<W: UiWriter>(
-    agent: &mut Agent<W>,
-    output: &SimpleOutput,
-) -> (bool, String) {
-    let tool_call = ToolCall {
-        tool: "plan_approve".to_string(),
-        args: serde_json::json!({}),
-    };
-    
-    match agent.execute_tool_call(&tool_call).await {
-        Ok(result) => {
-            let success = result.contains("✅ Plan approved");
-            output.print(&result);
-            (success, result)
-        }
-        Err(e) => {
-            let msg = format!("❌ Failed to approve plan: {}", e);
-            output.print(&msg);
-            (false, msg)
-        }
     }
 }
 
@@ -319,30 +261,6 @@ pub async fn run_interactive<W: UiWriter>(
                     // Single line input
                     let input = line.trim().to_string();
 
-                    // In plan mode, check for approval input before anything else
-                    if in_plan_mode && is_approval_input(&input) {
-                        // Add to history
-                        rl.add_history_entry(&input)?;
-                        
-                        // Reprint input with formatting
-                        reprint_formatted_input(&input, &prompt);
-                        
-                        let (approved, result) = execute_plan_approve_directly(&mut agent, &output).await;
-                        
-                        if approved {
-                            // Exit plan mode on successful approval
-                            in_plan_mode = false;
-                            agent.set_plan_mode(false);
-                            
-                            // Add synthetic assistant message so LLM knows plan was approved
-                            use g3_providers::{Message, MessageRole};
-                            let synthetic_msg = Message::new(MessageRole::Assistant, result);
-                            agent.add_message_to_context(synthetic_msg);
-                        }
-                        // Stay in plan mode if approval failed
-                        continue;
-                    }
-
                     if input.is_empty() {
                         continue;
                     }
@@ -538,42 +456,6 @@ mod tests {
         });
         let prompt = build_prompt(false, false, None, &project);
         assert!(prompt.contains("awesome-app"));
-    }
-
-    #[test]
-    fn test_is_approval_input() {
-        // Exact matches
-        assert!(is_approval_input("a"));
-        assert!(is_approval_input("approve"));
-        assert!(is_approval_input("approved"));
-        assert!(is_approval_input("yes"));
-        assert!(is_approval_input("y"));
-        assert!(is_approval_input("ok"));
-        
-        // Case insensitive
-        assert!(is_approval_input("APPROVE"));
-        assert!(is_approval_input("Approved"));
-        
-        // Misspellings
-        assert!(is_approval_input("approv"));
-        assert!(is_approval_input("aprove"));
-        assert!(is_approval_input("appprove"));
-        
-        // Non-approval inputs
-        assert!(!is_approval_input("no"));
-        assert!(!is_approval_input("reject"));
-        assert!(!is_approval_input("hello world"));
-        
-        // Should NOT match partial words in longer text
-        assert!(!is_approval_input("I want to approve this"));
-        assert!(!is_approval_input("please approve the plan"));
-        assert!(!is_approval_input("a]ppro ve")); // gibberish with 'a' at start
-        
-        // Should match with trailing punctuation
-        assert!(is_approval_input("approved!"));
-        assert!(is_approval_input("approve."));
-        assert!(is_approval_input("yes!"));
-        assert!(is_approval_input("ok,"));
     }
 
     // Tests for prepare_plan_mode_input
