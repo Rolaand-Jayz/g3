@@ -336,6 +336,11 @@ pub struct ActionEnvelope {
     /// Facts about the completed work (flexible YAML structure)
     #[serde(default)]
     pub facts: HashMap<String, YamlValue>,
+
+    /// Verification token — set by the deterministic verification pipeline.
+    /// Format: "g3v1:<base64>" — proves that rulespec evaluation passed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified: Option<String>,
 }
 
 impl ActionEnvelope {
