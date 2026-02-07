@@ -25,7 +25,7 @@ use super::invariants::{
     format_envelope_markdown, get_envelope_path, read_envelope, read_rulespec,
     write_envelope, ActionEnvelope,
 };
-use super::datalog::{compile_rulespec, extract_facts, execute_rules, format_datalog_results};
+use super::datalog::{compile_rulespec, extract_facts, execute_rules, format_datalog_program, format_datalog_results};
 
 // ============================================================================
 // Tool Implementation
@@ -147,8 +147,8 @@ pub fn verify_envelope(session_id: &str, working_dir: &Path) -> String {
 
     // Write compiled rules to .dl file
     let dl_path = session_dir.join("rulespec.compiled.dl");
-    let compiled_yaml = serde_yaml::to_string(&compiled).unwrap_or_default();
-    if let Err(e) = std::fs::write(&dl_path, &compiled_yaml) {
+    let datalog_program = format_datalog_program(&compiled, &facts);
+    if let Err(e) = std::fs::write(&dl_path, &datalog_program) {
         eprintln!("⚠️  Failed to write compiled rules: {}", e);
     }
 

@@ -535,6 +535,171 @@ fn evaluate_predicate_datalog(
 }
 
 // ============================================================================
+// Datalog Program Generation
+// ============================================================================
+
+/// Escape a string value for use in a datalog literal.
+///
+/// Replaces backslashes, double quotes, and newlines with escape sequences.
+fn escape_datalog_string(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t")
+}
+
+/// Format a compiled rulespec and extracted facts as a datalog program.
+///
+/// Produces a textual `.dl` file with:
+/// - Relation declarations (`.decl`)
+/// - Fact assertions from the envelope
+/// - Rules derived from rulespec predicates
+/// - An output directive for query results
+///
+/// This is a Soufflé-style datalog dialect, which is the most widely
+/// used textual datalog format.
+pub fn format_datalog_program(
+    compiled: &CompiledRulespec,
+    facts: &HashSet<Fact>,
+) -> String {
+    let mut out = String::new();
+
+    // ── Header ──────────────────────────────────────────────────────
+    out.push_str("// Auto-generated datalog program\n");
+    out.push_str(&format!("// Plan: {}\n", compiled.plan_id));
+    out.push_str(&format!("// Compiled at revision: {}\n", compiled.compiled_at_revision));
+    out.push_str("\n");
+
+    // ── Relation declarations ───────────────────────────────────────
+    out.push_str("// --- Relation declarations ---\n");
+    out.push_str(".decl claim_value(claim: symbol, value: symbol)\n");
+    out.push_str(".decl claim_length(claim: symbol, length: number)\n");
+    out.push_str(".decl predicate_pass(id: number)\n");
+    out.push_str(".decl predicate_fail(id: number)\n");
+    out.push_str("\n");
+    out.push_str(".output predicate_pass\n");
+    out.push_str(".output predicate_fail\n");
+    out.push_str("\n");
+
+    // ── Facts ───────────────────────────────────────────────────────
+    out.push_str("// --- Facts (from envelope) ---\n");
+    // Sort for deterministic output
+    let mut sorted_facts: Vec<&Fact> = facts.iter().collect();
+    sorted_facts.sort_by(|a, b| (&a.claim_name, &a.value).cmp(&(&b.claim_name, &b.value)));
+
+    for fact in &sorted_facts {
+        if fact.claim_name.ends_with(".__length") {
+            // Length facts go into the claim_length relation
+            let base_claim = fact.claim_name.trim_end_matches(".__length");
+            if let Ok(n) = fact.value.parse::<i64>() {
+                out.push_str(&format!(
+                    "claim_length(\"{}\", {}).\n",
+                    escape_datalog_string(base_claim),
+                    n,
+                ));
+            }
+        } else {
+            out.push_str(&format!(
+                "claim_value(\"{}\", \"{}\").\n",
+                escape_datalog_string(&fact.claim_name),
+                escape_datalog_string(&fact.value),
+            ));
+        }
+    }
+    out.push_str("\n");
+
+    // ── Rules (from predicates) ─────────────────────────────────────
+    out.push_str("// --- Rules (from rulespec predicates) ---\n");
+    for pred in &compiled.predicates {
+        let id = pred.id;
+        let claim = escape_datalog_string(&pred.claim_name);
+        let expected = pred
+            .expected_value
+            .as_deref()
+            .map(|v| escape_datalog_string(v))
+            .unwrap_or_default();
+
+        // Emit a comment describing the predicate
+        out.push_str(&format!(
+            "// pred[{}]: {} {} {}{}\n",
+            id,
+            pred.rule,
+            pred.claim_name,
+            pred.expected_value.as_deref().map(|v| format!("'{}'", v)).unwrap_or_default(),
+            pred.notes.as_deref().map(|n| format!("  -- {}", n)).unwrap_or_default(),
+        ));
+
+        match pred.rule {
+            PredicateRule::Exists => {
+                out.push_str(&format!(
+                    "predicate_pass({}) :- claim_value(\"{}\", _).\n",
+                    id, claim,
+                ));
+            }
+            PredicateRule::NotExists => {
+                // Pass when no matching fact exists
+                out.push_str(&format!(
+                    "predicate_pass({}) :- !claim_value(\"{}\", _).\n",
+                    id, claim,
+                ));
+            }
+            PredicateRule::Equals => {
+                out.push_str(&format!(
+                    "predicate_pass({}) :- claim_value(\"{}\", \"{}\").\n",
+                    id, claim, expected,
+                ));
+            }
+            PredicateRule::Contains => {
+                out.push_str(&format!(
+                    "predicate_pass({}) :- claim_value(\"{}\", \"{}\").\n",
+                    id, claim, expected,
+                ));
+            }
+            PredicateRule::GreaterThan => {
+                out.push_str(&format!(
+                    "predicate_pass({}) :- claim_value(\"{}\", V), to_number(V, N), N > {}.\n",
+                    id, claim, expected,
+                ));
+            }
+            PredicateRule::LessThan => {
+                out.push_str(&format!(
+                    "predicate_pass({}) :- claim_value(\"{}\", V), to_number(V, N), N < {}.\n",
+                    id, claim, expected,
+                ));
+            }
+            PredicateRule::MinLength => {
+                out.push_str(&format!(
+                    "predicate_pass({}) :- claim_length(\"{}\", N), N >= {}.\n",
+                    id, claim, expected,
+                ));
+            }
+            PredicateRule::MaxLength => {
+                out.push_str(&format!(
+                    "predicate_pass({}) :- claim_length(\"{}\", N), N <= {}.\n",
+                    id, claim, expected,
+                ));
+            }
+            PredicateRule::Matches => {
+                // Regex matching expressed as a match functor
+                out.push_str(&format!(
+                    "predicate_pass({}) :- claim_value(\"{}\", V), match(\"{}\", V).\n",
+                    id, claim, expected,
+                ));
+            }
+        }
+
+        // Derive failure as the negation of pass
+        out.push_str(&format!(
+            "predicate_fail({}) :- !predicate_pass({}).\n",
+            id, id,
+        ));
+        out.push_str("\n");
+    }
+
+    out
+}
+// ============================================================================
 // ============================================================================
 // Formatting
 // ============================================================================
@@ -1038,5 +1203,233 @@ mod tests {
         assert!(output.contains("shadow mode"));
         assert!(output.contains("✅"));
         assert!(output.contains("Facts extracted:"));
+    }
+
+    // ========================================================================
+    // Datalog Program Generation Tests
+    // ========================================================================
+
+    #[test]
+    fn test_format_datalog_program_butler_example() {
+        // Mirrors the butler rulespec: email_reviewed equals true
+        let mut rulespec = Rulespec::new();
+        rulespec.claims.push(Claim::new("email_reviewed", "facts.reviewed"));
+        rulespec.predicates.push(
+            Predicate::new("email_reviewed", PredicateRule::Equals, InvariantSource::TaskPrompt)
+                .with_value(YamlValue::Bool(true))
+                .with_notes("Outgoing emails must be manually reviewed before sending"),
+        );
+
+        let compiled = compile_rulespec(&rulespec, "outbound-email", 0).unwrap();
+
+        let mut envelope = ActionEnvelope::new();
+        envelope.add_fact("facts", serde_yaml::from_str("reviewed: true").unwrap());
+        let facts = extract_facts(&envelope, &compiled);
+
+        let dl = format_datalog_program(&compiled, &facts);
+
+        // Header
+        assert!(dl.contains("// Auto-generated datalog program"));
+        assert!(dl.contains("// Plan: outbound-email"));
+
+        // Relation declarations
+        assert!(dl.contains(".decl claim_value(claim: symbol, value: symbol)"));
+        assert!(dl.contains(".decl claim_length(claim: symbol, length: number)"));
+        assert!(dl.contains(".decl predicate_pass(id: number)"));
+        assert!(dl.contains(".decl predicate_fail(id: number)"));
+        assert!(dl.contains(".output predicate_pass"));
+        assert!(dl.contains(".output predicate_fail"));
+
+        // Facts
+        assert!(dl.contains(r#"claim_value("email_reviewed", "true")."#));
+
+        // Rule for equals
+        assert!(dl.contains(r#"predicate_pass(0) :- claim_value("email_reviewed", "true")."#));
+        assert!(dl.contains("predicate_fail(0) :- !predicate_pass(0)."));
+
+        // Comment with notes
+        assert!(dl.contains("Outgoing emails must be manually reviewed"));
+    }
+
+    #[test]
+    fn test_format_datalog_program_empty_rulespec() {
+        let rulespec = Rulespec::new();
+        let compiled = compile_rulespec(&rulespec, "empty", 0).unwrap();
+        let facts = std::collections::HashSet::new();
+
+        let dl = format_datalog_program(&compiled, &facts);
+
+        // Should still have valid structure
+        assert!(dl.contains(".decl claim_value"));
+        assert!(dl.contains(".decl predicate_pass"));
+        assert!(dl.contains("// --- Facts (from envelope) ---"));
+        assert!(dl.contains("// --- Rules (from rulespec predicates) ---"));
+
+        // No fact assertions (lines ending with period) or rules beyond declarations
+        assert!(!dl.contains(r#"claim_value(""#));
+        assert!(!dl.contains("predicate_pass(0)"));
+    }
+
+    #[test]
+    fn test_format_datalog_program_empty_facts() {
+        let mut rulespec = Rulespec::new();
+        rulespec.claims.push(Claim::new("test", "foo.bar"));
+        rulespec.predicates.push(
+            Predicate::new("test", PredicateRule::Exists, InvariantSource::TaskPrompt),
+        );
+
+        let compiled = compile_rulespec(&rulespec, "test", 1).unwrap();
+        let facts = std::collections::HashSet::new();
+
+        let dl = format_datalog_program(&compiled, &facts);
+
+        // Has declarations and rules but no fact assertions
+        assert!(dl.contains(".decl claim_value"));
+        assert!(dl.contains("predicate_pass(0) :- claim_value"));
+        assert!(dl.contains("predicate_fail(0) :- !predicate_pass(0)"));
+        // No claim_value facts
+        // The rules section will reference claim_value("test", _) but the facts section should not
+        let facts_section = dl.split("// --- Rules").next().unwrap();
+        assert!(!facts_section.contains(r#"claim_value("test""#));
+    }
+
+    #[test]
+    fn test_format_datalog_program_special_characters() {
+        let mut rulespec = Rulespec::new();
+        rulespec.claims.push(Claim::new("msg", "message"));
+        rulespec.predicates.push(
+            Predicate::new("msg", PredicateRule::Equals, InvariantSource::TaskPrompt)
+                .with_value(YamlValue::String("hello \"world\"".to_string())),
+        );
+
+        let compiled = compile_rulespec(&rulespec, "test", 0).unwrap();
+
+        let mut envelope = ActionEnvelope::new();
+        envelope.add_fact("message", YamlValue::String("hello \"world\"".to_string()));
+        let facts = extract_facts(&envelope, &compiled);
+
+        let dl = format_datalog_program(&compiled, &facts);
+
+        // Quotes should be escaped
+        assert!(dl.contains(r#"\"world\""#));
+    }
+
+    #[test]
+    fn test_format_datalog_program_all_rule_types() {
+        let mut rulespec = Rulespec::new();
+
+        // Create claims for each rule type
+        rulespec.claims.push(Claim::new("c_exists", "a"));
+        rulespec.claims.push(Claim::new("c_not_exists", "b"));
+        rulespec.claims.push(Claim::new("c_equals", "c"));
+        rulespec.claims.push(Claim::new("c_contains", "d"));
+        rulespec.claims.push(Claim::new("c_gt", "e"));
+        rulespec.claims.push(Claim::new("c_lt", "f"));
+        rulespec.claims.push(Claim::new("c_min", "g"));
+        rulespec.claims.push(Claim::new("c_max", "h"));
+        rulespec.claims.push(Claim::new("c_matches", "i"));
+
+        // Add one predicate per rule type
+        rulespec.predicates.push(
+            Predicate::new("c_exists", PredicateRule::Exists, InvariantSource::TaskPrompt),
+        );
+        rulespec.predicates.push(
+            Predicate::new("c_not_exists", PredicateRule::NotExists, InvariantSource::TaskPrompt),
+        );
+        rulespec.predicates.push(
+            Predicate::new("c_equals", PredicateRule::Equals, InvariantSource::TaskPrompt)
+                .with_value(YamlValue::String("val".to_string())),
+        );
+        rulespec.predicates.push(
+            Predicate::new("c_contains", PredicateRule::Contains, InvariantSource::TaskPrompt)
+                .with_value(YamlValue::String("item".to_string())),
+        );
+        rulespec.predicates.push(
+            Predicate::new("c_gt", PredicateRule::GreaterThan, InvariantSource::TaskPrompt)
+                .with_value(YamlValue::Number(10.into())),
+        );
+        rulespec.predicates.push(
+            Predicate::new("c_lt", PredicateRule::LessThan, InvariantSource::TaskPrompt)
+                .with_value(YamlValue::Number(100.into())),
+        );
+        rulespec.predicates.push(
+            Predicate::new("c_min", PredicateRule::MinLength, InvariantSource::TaskPrompt)
+                .with_value(YamlValue::Number(2.into())),
+        );
+        rulespec.predicates.push(
+            Predicate::new("c_max", PredicateRule::MaxLength, InvariantSource::TaskPrompt)
+                .with_value(YamlValue::Number(5.into())),
+        );
+        rulespec.predicates.push(
+            Predicate::new("c_matches", PredicateRule::Matches, InvariantSource::TaskPrompt)
+                .with_value(YamlValue::String("^foo.*".to_string())),
+        );
+
+        let compiled = compile_rulespec(&rulespec, "all-rules", 1).unwrap();
+        let facts = std::collections::HashSet::new();
+
+        let dl = format_datalog_program(&compiled, &facts);
+
+        // Each rule type produces a distinct pattern
+        assert!(dl.contains(r#"predicate_pass(0) :- claim_value("c_exists", _)."#));
+        assert!(dl.contains(r#"predicate_pass(1) :- !claim_value("c_not_exists", _)."#));
+        assert!(dl.contains(r#"predicate_pass(2) :- claim_value("c_equals", "val")."#));
+        assert!(dl.contains(r#"predicate_pass(3) :- claim_value("c_contains", "item")."#));
+        assert!(dl.contains(r#"predicate_pass(4) :- claim_value("c_gt", V), to_number(V, N), N > 10."#));
+        assert!(dl.contains(r#"predicate_pass(5) :- claim_value("c_lt", V), to_number(V, N), N < 100."#));
+        assert!(dl.contains(r#"predicate_pass(6) :- claim_length("c_min", N), N >= 2."#));
+        assert!(dl.contains(r#"predicate_pass(7) :- claim_length("c_max", N), N <= 5."#));
+        assert!(dl.contains(r#"predicate_pass(8) :- claim_value("c_matches", V), match("^foo.*", V)."#));
+
+        // Each has a corresponding fail rule
+        for i in 0..9 {
+            assert!(dl.contains(&format!("predicate_fail({}) :- !predicate_pass({}).", i, i)));
+        }
+    }
+
+    #[test]
+    fn test_format_datalog_program_length_facts() {
+        let mut rulespec = Rulespec::new();
+        rulespec.claims.push(Claim::new("caps", "csv_importer.capabilities"));
+        rulespec.predicates.push(
+            Predicate::new("caps", PredicateRule::MinLength, InvariantSource::TaskPrompt)
+                .with_value(YamlValue::Number(2.into())),
+        );
+
+        let compiled = compile_rulespec(&rulespec, "test", 0).unwrap();
+
+        let envelope = make_test_envelope();
+        let facts = extract_facts(&envelope, &compiled);
+
+        let dl = format_datalog_program(&compiled, &facts);
+
+        // Length facts should use claim_length relation
+        assert!(dl.contains(r#"claim_length("caps", 3)."#));
+        // Individual values should use claim_value
+        assert!(dl.contains(r#"claim_value("caps", "handle_tsv")."#));
+        assert!(dl.contains(r#"claim_value("caps", "handle_headers")."#));
+    }
+
+    #[test]
+    fn test_format_datalog_program_deterministic_output() {
+        let envelope = make_test_envelope();
+        let rulespec = make_test_rulespec();
+        let compiled = compile_rulespec(&rulespec, "test", 1).unwrap();
+        let facts = extract_facts(&envelope, &compiled);
+
+        let dl1 = format_datalog_program(&compiled, &facts);
+        let dl2 = format_datalog_program(&compiled, &facts);
+
+        // Output should be identical across calls (sorted facts)
+        assert_eq!(dl1, dl2);
+    }
+
+    #[test]
+    fn test_escape_datalog_string() {
+        assert_eq!(escape_datalog_string("hello"), "hello");
+        assert_eq!(escape_datalog_string("say \"hi\""), "say \\\"hi\\\"");
+        assert_eq!(escape_datalog_string("line1\nline2"), "line1\\nline2");
+        assert_eq!(escape_datalog_string("tab\there"), "tab\\there");
+        assert_eq!(escape_datalog_string("back\\slash"), "back\\\\slash");
     }
 }
