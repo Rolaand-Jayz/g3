@@ -1,5 +1,5 @@
 # Workspace Memory
-> Updated: 2026-02-06T05:06:29Z | Size: 22.0k chars
+> Updated: 2026-02-07T01:27:41Z | Size: 23.6k chars
 
 ### Remember Tool Wiring
 - `crates/g3-core/src/tools/memory.rs` [0..5000] - `execute_remember()`, `get_memory_path()`, `merge_memory()`
@@ -388,3 +388,21 @@ Makes tool output responsive to terminal width - no line wrapping, with 4-char r
 **Workflow change**: `write_envelope` → `verify_envelope()` → datalog shadow, then `plan_write(done)` → `plan_verify()` → checks envelope exists
 - `shadow_datalog_verify()` removed from `plan.rs`
 - `format_verification_results()` no longer runs datalog, only checks envelope existence
+
+### Datalog Program Generation
+- `crates/g3-core/src/tools/datalog.rs` [537..701] - `format_datalog_program()`, `escape_datalog_string()`
+  - Soufflé-style .dl output with `.decl` relations, fact assertions, and rules
+  - Relations: `claim_value(claim, value)`, `claim_length(claim, length)`, `predicate_pass(id)`, `predicate_fail(id)`
+  - Handles all 9 PredicateRule types: Exists, NotExists, Equals, Contains, GreaterThan, LessThan, MinLength, MaxLength, Matches
+  - Length facts (`__length` suffix) go into `claim_length` relation
+- `crates/g3-core/src/tools/envelope.rs` [150] - `verify_envelope()` now calls `format_datalog_program()` instead of `serde_yaml::to_string()`
+- **Bug fixed**: `.dl` files previously contained YAML (just serialized CompiledRulespec), now contain actual Soufflé datalog
+
+### Datalog Program Generation
+- `crates/g3-core/src/tools/datalog.rs` [537..701] - `format_datalog_program()`, `escape_datalog_string()`
+  - Soufflé-style .dl output with `.decl` relations, fact assertions, and rules
+  - Relations: `claim_value(claim, value)`, `claim_length(claim, length)`, `predicate_pass(id)`, `predicate_fail(id)`
+  - Handles all 9 PredicateRule types: Exists, NotExists, Equals, Contains, GreaterThan, LessThan, MinLength, MaxLength, Matches
+  - Length facts (`__length` suffix) go into `claim_length` relation
+- `crates/g3-core/src/tools/envelope.rs` [150] - `verify_envelope()` now calls `format_datalog_program()` instead of `serde_yaml::to_string()`
+- **Bug fixed**: `.dl` files previously contained YAML (just serialized CompiledRulespec), now contain actual Soufflé datalog
