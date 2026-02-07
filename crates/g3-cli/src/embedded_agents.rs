@@ -22,6 +22,7 @@ static EMBEDDED_AGENTS: &[(&str, &str)] = &[
     ("huffman", include_str!("../../../agents/huffman.md")),
     ("lamport", include_str!("../../../agents/lamport.md")),
     ("scout", include_str!("../../../agents/scout.md")),
+    ("solon", include_str!("../../../agents/solon.md")),
 ];
 
 /// Get an embedded agent prompt by name.
@@ -89,7 +90,7 @@ mod tests {
     #[test]
     fn test_embedded_agents_exist() {
         // Verify all expected agents are embedded
-        let expected = ["breaker", "carmack", "euler", "fowler", "hopper", "huffman", "lamport", "scout"];
+        let expected = ["breaker", "carmack", "euler", "fowler", "hopper", "huffman", "lamport", "scout", "solon"];
         for name in expected {
             assert!(
                 get_embedded_agent(name).is_some(),
@@ -102,7 +103,7 @@ mod tests {
     #[test]
     fn test_list_embedded_agents() {
         let agents = list_embedded_agents();
-        assert!(agents.len() >= 8, "Should have at least 8 embedded agents");
+        assert!(agents.len() >= 9, "Should have at least 9 embedded agents");
         assert!(agents.contains(&"carmack"));
         assert!(agents.contains(&"hopper"));
     }

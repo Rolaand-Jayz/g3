@@ -63,6 +63,18 @@ pub struct CompiledPredicate {
     pub source: InvariantSource,
     /// Optional notes
     pub notes: Option<String>,
+    /// Optional when condition (compiled)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<CompiledWhenCondition>,
+}
+
+/// A compiled when condition for datalog execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompiledWhenCondition {
+    pub claim_name: String,
+    pub selector: String,
+    pub rule: PredicateRule,
+    pub expected_value: Option<String>,
 }
 
 /// Compiled rulespec ready for datalog execution.
@@ -136,6 +148,15 @@ pub fn compile_rulespec(
             expected_value,
             source: predicate.source,
             notes: predicate.notes.clone(),
+            when: predicate.when.as_ref().map(|w| {
+                let when_selector = claims.get(&w.claim).cloned().unwrap_or_default();
+                CompiledWhenCondition {
+                    claim_name: w.claim.clone(),
+                    selector: when_selector,
+                    rule: w.rule.clone(),
+                    expected_value: w.value.as_ref().map(yaml_value_to_string),
+                }
+            }),
         });
     }
 
@@ -248,10 +269,9 @@ fn extract_values_recursive(claim_name: &str, value: &YamlValue, facts: &mut Has
             }
         }
         YamlValue::Null => {
-            facts.insert(Fact {
-                claim_name: claim_name.to_string(),
-                value: "null".to_string(),
-            });
+            // Null values are intentionally NOT inserted as facts.
+            // This ensures `exists` returns false and `not_exists` returns true
+            // for null envelope values (e.g., `breaking_changes: null`).
         }
         _ => {
             // Scalar values
@@ -355,7 +375,38 @@ pub fn execute_rules(
 
     // Now evaluate each predicate
     for pred in &compiled.predicates {
-        let result = evaluate_predicate_datalog(pred, &fact_lookup);
+        // Check when condition — if present and not met, skip (vacuous pass)
+        let result = if let Some(when) = &pred.when {
+            // Build a synthetic predicate to evaluate the when condition
+            // using the same logic as regular predicate evaluation.
+            let when_pred = CompiledPredicate {
+                id: usize::MAX, // sentinel — not a real predicate
+                claim_name: when.claim_name.clone(),
+                selector: when.selector.clone(),
+                rule: when.rule.clone(),
+                expected_value: when.expected_value.clone(),
+                source: pred.source,
+                notes: None,
+                when: None,
+            };
+            let when_met = evaluate_predicate_datalog(&when_pred, &fact_lookup).passed;
+            if !when_met {
+                DatalogPredicateResult {
+                    id: pred.id,
+                    claim_name: pred.claim_name.clone(),
+                    rule: pred.rule.clone(),
+                    expected_value: pred.expected_value.clone(),
+                    passed: true,
+                    reason: "Skipped (when condition not met)".to_string(),
+                    source: pred.source,
+                    notes: pred.notes.clone(),
+                }
+            } else {
+                evaluate_predicate_datalog(pred, &fact_lookup)
+            }
+        } else {
+            evaluate_predicate_datalog(pred, &fact_lookup)
+        };
         
         if result.passed {
             passed_count += 1;
@@ -534,6 +585,50 @@ fn evaluate_predicate_datalog(
                 (false, format!("Claim '{}' has no values", pred.claim_name))
             }
         }
+        PredicateRule::NotContains => {
+            let expected = pred.expected_value.as_deref().unwrap_or("");
+            if let Some(values) = claim_values {
+                if values.contains(expected) {
+                    (false, format!("Contains '{}' but should not", expected))
+                } else {
+                    (true, format!("Does not contain '{}'", expected))
+                }
+            } else {
+                (true, format!("Claim '{}' has no values (not_contains passes vacuously)", pred.claim_name))
+            }
+        }
+        PredicateRule::AnyOf => {
+            let expected_set: Vec<&str> = pred.expected_value.as_deref()
+                .map(|v| v.trim_matches(|c| c == '[' || c == ']')
+                    .split(", ")
+                    .collect())
+                .unwrap_or_default();
+            if let Some(values) = claim_values {
+                if values.iter().any(|v| expected_set.contains(v)) {
+                    (true, format!("Value is in allowed set"))
+                } else {
+                    (false, format!("Value is not in allowed set"))
+                }
+            } else {
+                (false, format!("Claim '{}' has no values", pred.claim_name))
+            }
+        }
+        PredicateRule::NoneOf => {
+            let forbidden_set: Vec<&str> = pred.expected_value.as_deref()
+                .map(|v| v.trim_matches(|c| c == '[' || c == ']')
+                    .split(", ")
+                    .collect())
+                .unwrap_or_default();
+            if let Some(values) = claim_values {
+                if values.iter().any(|v| forbidden_set.contains(v)) {
+                    (false, format!("Value is in forbidden set"))
+                } else {
+                    (true, format!("Value is not in forbidden set"))
+                }
+            } else {
+                (true, format!("Claim '{}' has no values (none_of passes vacuously)", pred.claim_name))
+            }
+        }
     };
 
     DatalogPredicateResult {
@@ -701,6 +796,25 @@ pub fn format_datalog_program(
                     id, claim, expected,
                 ));
             }
+            PredicateRule::NotContains => {
+                out.push_str(&format!(
+                    "predicate_pass({}) :- !claim_value(\"{}\", \"{}\").\n",
+                    id, claim, expected,
+                ));
+            }
+            PredicateRule::AnyOf => {
+                // any_of: pass if claim value matches any element in the set
+                out.push_str(&format!(
+                    "predicate_pass({}) :- claim_value(\"{}\", V), any_of(\"{}\", V).\n",
+                    id, claim, expected,
+                ));
+            }
+            PredicateRule::NoneOf => {
+                out.push_str(&format!(
+                    "predicate_pass({}) :- !claim_value(\"{}\", V), none_of(\"{}\", V).\n",
+                    id, claim, expected,
+                ));
+            }
         }
 
         // Derive failure as the negation of pass
@@ -784,6 +898,7 @@ pub fn format_datalog_results(result: &DatalogExecutionResult) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::invariants::WhenCondition;
 
     fn make_test_rulespec() -> Rulespec {
         let mut rulespec = Rulespec::new();
@@ -975,10 +1090,8 @@ mod tests {
 
         let facts = extract_facts(&envelope, &compiled);
 
-        assert!(facts.contains(&Fact {
-            claim_name: "test".to_string(),
-            value: "null".to_string(),
-        }));
+        // Null values should NOT produce facts — this ensures not_exists passes for null
+        assert!(facts.is_empty(), "Null values should not produce facts, got: {:?}", facts);
     }
 
     #[test]
@@ -1568,5 +1681,343 @@ mod tests {
         assert_eq!(escape_datalog_string("line1\nline2"), "line1\\nline2");
         assert_eq!(escape_datalog_string("tab\there"), "tab\\there");
         assert_eq!(escape_datalog_string("back\\slash"), "back\\\\slash");
+    }
+
+    // ========================================================================
+    // New Rules: NotContains, AnyOf, NoneOf in Datalog
+    // ========================================================================
+
+    #[test]
+    fn test_execute_rules_not_contains_pass() {
+        let mut rulespec = Rulespec::new();
+        rulespec.claims.push(Claim::new("caps", "feature.capabilities"));
+        rulespec.predicates.push(
+            Predicate::new("caps", PredicateRule::NotContains, InvariantSource::TaskPrompt)
+                .with_value(YamlValue::String("deprecated".to_string())),
+        );
+
+        let compiled = compile_rulespec(&rulespec, "test", 1).unwrap();
+
+        let mut envelope = ActionEnvelope::new();
+        envelope.add_fact("feature", serde_yaml::from_str("capabilities: [handle_csv, handle_tsv]").unwrap());
+        let facts = extract_facts(&envelope, &compiled);
+
+        let result = execute_rules(&compiled, &facts);
+        assert!(result.all_passed(), "not_contains should pass when element absent");
+    }
+
+    #[test]
+    fn test_execute_rules_not_contains_fail() {
+        let mut rulespec = Rulespec::new();
+        rulespec.claims.push(Claim::new("caps", "feature.capabilities"));
+        rulespec.predicates.push(
+            Predicate::new("caps", PredicateRule::NotContains, InvariantSource::TaskPrompt)
+                .with_value(YamlValue::String("handle_csv".to_string())),
+        );
+
+        let compiled = compile_rulespec(&rulespec, "test", 1).unwrap();
+
+        let mut envelope = ActionEnvelope::new();
+        envelope.add_fact("feature", serde_yaml::from_str("capabilities: [handle_csv, handle_tsv]").unwrap());
+        let facts = extract_facts(&envelope, &compiled);
+
+        let result = execute_rules(&compiled, &facts);
+        assert_eq!(result.failed_count, 1, "not_contains should fail when element present");
+    }
+
+    #[test]
+    fn test_execute_rules_any_of_pass() {
+        let mut rulespec = Rulespec::new();
+        rulespec.claims.push(Claim::new("format", "feature.output_format"));
+        rulespec.predicates.push(
+            Predicate::new("format", PredicateRule::AnyOf, InvariantSource::TaskPrompt)
+                .with_value(YamlValue::Sequence(vec![
+                    YamlValue::String("json".to_string()),
+                    YamlValue::String("yaml".to_string()),
+                ])),
+        );
+
+        let compiled = compile_rulespec(&rulespec, "test", 1).unwrap();
+
+        let mut envelope = ActionEnvelope::new();
+        envelope.add_fact("feature", serde_yaml::from_str("output_format: json").unwrap());
+        let facts = extract_facts(&envelope, &compiled);
+
+        let result = execute_rules(&compiled, &facts);
+        assert!(result.all_passed(), "any_of should pass when value is in set");
+    }
+
+    #[test]
+    fn test_execute_rules_any_of_fail() {
+        let mut rulespec = Rulespec::new();
+        rulespec.claims.push(Claim::new("format", "feature.output_format"));
+        rulespec.predicates.push(
+            Predicate::new("format", PredicateRule::AnyOf, InvariantSource::TaskPrompt)
+                .with_value(YamlValue::Sequence(vec![
+                    YamlValue::String("json".to_string()),
+                    YamlValue::String("yaml".to_string()),
+                ])),
+        );
+
+        let compiled = compile_rulespec(&rulespec, "test", 1).unwrap();
+
+        let mut envelope = ActionEnvelope::new();
+        envelope.add_fact("feature", serde_yaml::from_str("output_format: xml").unwrap());
+        let facts = extract_facts(&envelope, &compiled);
+
+        let result = execute_rules(&compiled, &facts);
+        assert_eq!(result.failed_count, 1, "any_of should fail when value not in set");
+    }
+
+    #[test]
+    fn test_execute_rules_none_of_pass() {
+        let mut rulespec = Rulespec::new();
+        rulespec.claims.push(Claim::new("format", "feature.output_format"));
+        rulespec.predicates.push(
+            Predicate::new("format", PredicateRule::NoneOf, InvariantSource::TaskPrompt)
+                .with_value(YamlValue::Sequence(vec![
+                    YamlValue::String("xml".to_string()),
+                    YamlValue::String("csv".to_string()),
+                ])),
+        );
+
+        let compiled = compile_rulespec(&rulespec, "test", 1).unwrap();
+
+        let mut envelope = ActionEnvelope::new();
+        envelope.add_fact("feature", serde_yaml::from_str("output_format: json").unwrap());
+        let facts = extract_facts(&envelope, &compiled);
+
+        let result = execute_rules(&compiled, &facts);
+        assert!(result.all_passed(), "none_of should pass when value not in forbidden set");
+    }
+
+    #[test]
+    fn test_execute_rules_none_of_fail() {
+        let mut rulespec = Rulespec::new();
+        rulespec.claims.push(Claim::new("format", "feature.output_format"));
+        rulespec.predicates.push(
+            Predicate::new("format", PredicateRule::NoneOf, InvariantSource::TaskPrompt)
+                .with_value(YamlValue::Sequence(vec![
+                    YamlValue::String("xml".to_string()),
+                    YamlValue::String("csv".to_string()),
+                ])),
+        );
+
+        let compiled = compile_rulespec(&rulespec, "test", 1).unwrap();
+
+        let mut envelope = ActionEnvelope::new();
+        envelope.add_fact("feature", serde_yaml::from_str("output_format: xml").unwrap());
+        let facts = extract_facts(&envelope, &compiled);
+
+        let result = execute_rules(&compiled, &facts);
+        assert_eq!(result.failed_count, 1, "none_of should fail when value in forbidden set");
+    }
+
+    // ========================================================================
+    // When Conditions in Datalog
+    // ========================================================================
+
+    #[test]
+    fn test_execute_rules_when_condition_met() {
+        let mut rulespec = Rulespec::new();
+        rulespec.claims.push(Claim::new("is_breaking", "api.breaking"));
+        rulespec.claims.push(Claim::new("caps", "feature.capabilities"));
+        rulespec.predicates.push(
+            Predicate::new("caps", PredicateRule::MinLength, InvariantSource::TaskPrompt)
+                .with_value(YamlValue::Number(2.into()))
+                .with_when(WhenCondition::new("is_breaking", PredicateRule::Equals)
+                    .with_value(YamlValue::Bool(true))),
+        );
+
+        let compiled = compile_rulespec(&rulespec, "test", 1).unwrap();
+
+        let mut envelope = ActionEnvelope::new();
+        envelope.add_fact("api", serde_yaml::from_str("breaking: true").unwrap());
+        envelope.add_fact("feature", serde_yaml::from_str("capabilities: [a, b, c]").unwrap());
+        let facts = extract_facts(&envelope, &compiled);
+
+        let result = execute_rules(&compiled, &facts);
+        assert!(result.all_passed(), "When met + predicate passes should pass");
+    }
+
+    #[test]
+    fn test_execute_rules_when_condition_not_met_vacuous_pass() {
+        let mut rulespec = Rulespec::new();
+        rulespec.claims.push(Claim::new("is_breaking", "api.breaking"));
+        rulespec.claims.push(Claim::new("caps", "feature.capabilities"));
+        rulespec.predicates.push(
+            Predicate::new("caps", PredicateRule::MinLength, InvariantSource::TaskPrompt)
+                .with_value(YamlValue::Number(100.into())) // would fail if evaluated
+                .with_when(WhenCondition::new("is_breaking", PredicateRule::Equals)
+                    .with_value(YamlValue::Bool(true))),
+        );
+
+        let compiled = compile_rulespec(&rulespec, "test", 1).unwrap();
+
+        let mut envelope = ActionEnvelope::new();
+        envelope.add_fact("api", serde_yaml::from_str("breaking: false").unwrap());
+        envelope.add_fact("feature", serde_yaml::from_str("capabilities: [a]").unwrap());
+        let facts = extract_facts(&envelope, &compiled);
+
+        let result = execute_rules(&compiled, &facts);
+        assert!(result.all_passed(), "When not met should be vacuous pass");
+        assert!(result.predicate_results[0].reason.contains("Skipped"));
+    }
+
+    #[test]
+    fn test_execute_rules_when_exists_on_null() {
+        let mut rulespec = Rulespec::new();
+        rulespec.claims.push(Claim::new("has_tests", "testing.tests"));
+        rulespec.claims.push(Claim::new("coverage", "testing.coverage"));
+        rulespec.predicates.push(
+            Predicate::new("coverage", PredicateRule::GreaterThan, InvariantSource::TaskPrompt)
+                .with_value(YamlValue::Number(80.into()))
+                .with_when(WhenCondition::new("has_tests", PredicateRule::Exists)),
+        );
+
+        let compiled = compile_rulespec(&rulespec, "test", 1).unwrap();
+
+        // tests is null → when(exists) not met → vacuous pass
+        let mut envelope = ActionEnvelope::new();
+        envelope.add_fact("testing", serde_yaml::from_str("tests: null\ncoverage: 50").unwrap());
+        let facts = extract_facts(&envelope, &compiled);
+
+        let result = execute_rules(&compiled, &facts);
+        assert!(result.all_passed(), "When exists on null should skip (vacuous pass)");
+    }
+
+    #[test]
+    fn test_execute_rules_when_matches_condition_met() {
+        // This is the butler rulespec pattern: when subject matches ^Re:
+        let mut rulespec = Rulespec::new();
+        rulespec.claims.push(Claim::new("subject", "subject"));
+        rulespec.claims.push(Claim::new("reply_to", "reply_to_message_id"));
+        rulespec.predicates.push(
+            Predicate::new("reply_to", PredicateRule::Exists, InvariantSource::TaskPrompt)
+                .with_when(WhenCondition::new("subject", PredicateRule::Matches)
+                    .with_value(YamlValue::String("^Re: ".to_string()))),
+        );
+
+        let compiled = compile_rulespec(&rulespec, "test", 1).unwrap();
+
+        // Reply email WITH reply_to_message_id → should pass
+        let mut envelope = ActionEnvelope::new();
+        envelope.add_fact("subject", YamlValue::String("Re: Hello".to_string()));
+        envelope.add_fact("reply_to_message_id", YamlValue::String("<abc@example.com>".to_string()));
+        let facts = extract_facts(&envelope, &compiled);
+
+        let result = execute_rules(&compiled, &facts);
+        assert!(result.all_passed(), "When matches met + exists should pass");
+        // Crucially: should NOT say "Skipped"
+        assert!(!result.predicate_results[0].reason.contains("Skipped"),
+            "Should evaluate predicate, not skip it");
+    }
+
+    #[test]
+    fn test_execute_rules_when_matches_condition_met_but_predicate_fails() {
+        // Reply email WITHOUT reply_to_message_id → when met, predicate fails
+        let mut rulespec = Rulespec::new();
+        rulespec.claims.push(Claim::new("subject", "subject"));
+        rulespec.claims.push(Claim::new("reply_to", "reply_to_message_id"));
+        rulespec.predicates.push(
+            Predicate::new("reply_to", PredicateRule::Exists, InvariantSource::TaskPrompt)
+                .with_when(WhenCondition::new("subject", PredicateRule::Matches)
+                    .with_value(YamlValue::String("^Re: ".to_string()))),
+        );
+
+        let compiled = compile_rulespec(&rulespec, "test", 1).unwrap();
+
+        // Reply email WITHOUT reply_to → when condition met, predicate should FAIL
+        let mut envelope = ActionEnvelope::new();
+        envelope.add_fact("subject", YamlValue::String("Re: Hello".to_string()));
+        // No reply_to_message_id fact
+        let facts = extract_facts(&envelope, &compiled);
+
+        let result = execute_rules(&compiled, &facts);
+        assert_eq!(result.failed_count, 1,
+            "When matches met but exists fails → should fail, not vacuous pass");
+    }
+
+    #[test]
+    fn test_execute_rules_when_matches_condition_not_met() {
+        // Non-reply email → when condition not met → vacuous pass (skip)
+        let mut rulespec = Rulespec::new();
+        rulespec.claims.push(Claim::new("subject", "subject"));
+        rulespec.claims.push(Claim::new("reply_to", "reply_to_message_id"));
+        rulespec.predicates.push(
+            Predicate::new("reply_to", PredicateRule::Exists, InvariantSource::TaskPrompt)
+                .with_when(WhenCondition::new("subject", PredicateRule::Matches)
+                    .with_value(YamlValue::String("^Re: ".to_string()))),
+        );
+
+        let compiled = compile_rulespec(&rulespec, "test", 1).unwrap();
+
+        // Non-reply email → when not met → skip
+        let mut envelope = ActionEnvelope::new();
+        envelope.add_fact("subject", YamlValue::String("Hello World".to_string()));
+        // No reply_to_message_id
+        let facts = extract_facts(&envelope, &compiled);
+
+        let result = execute_rules(&compiled, &facts);
+        assert!(result.all_passed(), "Non-reply should get vacuous pass");
+        assert!(result.predicate_results[0].reason.contains("Skipped"),
+            "Should be skipped for non-reply");
+    }
+
+    // ========================================================================
+    // format_datalog_program for new rules
+    // ========================================================================
+
+    #[test]
+    fn test_format_datalog_program_new_rules() {
+        let mut rulespec = Rulespec::new();
+        rulespec.claims.push(Claim::new("caps", "feature.capabilities"));
+        rulespec.claims.push(Claim::new("format", "feature.output_format"));
+
+        rulespec.predicates.push(
+            Predicate::new("caps", PredicateRule::NotContains, InvariantSource::TaskPrompt)
+                .with_value(YamlValue::String("deprecated".to_string())),
+        );
+        rulespec.predicates.push(
+            Predicate::new("format", PredicateRule::AnyOf, InvariantSource::TaskPrompt)
+                .with_value(YamlValue::Sequence(vec![
+                    YamlValue::String("json".to_string()),
+                    YamlValue::String("yaml".to_string()),
+                ])),
+        );
+        rulespec.predicates.push(
+            Predicate::new("format", PredicateRule::NoneOf, InvariantSource::TaskPrompt)
+                .with_value(YamlValue::Sequence(vec![
+                    YamlValue::String("xml".to_string()),
+                ])),
+        );
+
+        let compiled = compile_rulespec(&rulespec, "test-new-rules", 1).unwrap();
+
+        let mut envelope = ActionEnvelope::new();
+        envelope.add_fact("feature", serde_yaml::from_str("capabilities: [a, b]\noutput_format: json").unwrap());
+        let facts = extract_facts(&envelope, &compiled);
+
+        let dl = format_datalog_program(&compiled, &facts);
+
+        // Verify header
+        assert!(dl.contains("// Plan: test-new-rules"));
+
+        // Verify not_contains rule
+        assert!(dl.contains("not_contains"), "Should contain not_contains rule comment");
+        assert!(dl.contains("predicate_pass(0)"));
+
+        // Verify any_of rule
+        assert!(dl.contains("any_of"), "Should contain any_of rule");
+        assert!(dl.contains("predicate_pass(1)"));
+
+        // Verify none_of rule
+        assert!(dl.contains("none_of"), "Should contain none_of rule");
+        assert!(dl.contains("predicate_pass(2)"));
+
+        // Verify failure derivation for all
+        assert!(dl.contains("predicate_fail(0) :- !predicate_pass(0)."));
+        assert!(dl.contains("predicate_fail(1) :- !predicate_pass(1)."));
+        assert!(dl.contains("predicate_fail(2) :- !predicate_pass(2)."));
     }
 }

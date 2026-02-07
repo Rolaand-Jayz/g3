@@ -81,6 +81,7 @@ When marking done, add `evidence` and `notes` to the item.
 Before marking the last plan item done, call `write_envelope` with facts about completed work. The envelope captures what was actually built so it can be verified against invariants in `analysis/rulespec.yaml` if present. The tool writes the envelope and runs datalog verification automatically.
 
 ```yaml
+type: code_change
 facts:
   csv_importer:
     capabilities: [handle_headers, handle_tsv, handle_quoted_fields]

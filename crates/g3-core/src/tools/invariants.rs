@@ -103,6 +103,12 @@ pub enum PredicateRule {
     MaxLength,
     /// Value matches a regex pattern
     Matches,
+    /// Value does NOT contain the specified element (negation of Contains)
+    NotContains,
+    /// Value is one of the specified set of values
+    AnyOf,
+    /// Value is none of the specified set of values
+    NoneOf,
 }
 
 impl std::fmt::Display for PredicateRule {
@@ -117,7 +123,37 @@ impl std::fmt::Display for PredicateRule {
             PredicateRule::MinLength => write!(f, "min_length"),
             PredicateRule::MaxLength => write!(f, "max_length"),
             PredicateRule::Matches => write!(f, "matches"),
+            PredicateRule::NotContains => write!(f, "not_contains"),
+            PredicateRule::AnyOf => write!(f, "any_of"),
+            PredicateRule::NoneOf => write!(f, "none_of"),
         }
+    }
+}
+
+/// A predicate defines a rule to evaluate against a claim's value.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WhenCondition {
+    /// Name of the claim to check for the condition
+    pub claim: String,
+    /// The rule to apply for the condition check
+    pub rule: PredicateRule,
+    /// Value to compare against (optional, depends on rule)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<YamlValue>,
+}
+
+impl WhenCondition {
+    pub fn new(claim: impl Into<String>, rule: PredicateRule) -> Self {
+        Self {
+            claim: claim.into(),
+            rule,
+            value: None,
+        }
+    }
+
+    pub fn with_value(mut self, value: YamlValue) -> Self {
+        self.value = Some(value);
+        self
     }
 }
 
@@ -137,6 +173,10 @@ pub struct Predicate {
     /// Optional notes explaining the invariant or providing nuance
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
+    /// Optional condition that must be met for this predicate to be evaluated.
+    /// If the condition is not met, the predicate is skipped (vacuous pass).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<WhenCondition>,
 }
 
 impl Predicate {
@@ -151,6 +191,7 @@ impl Predicate {
             value: None,
             source,
             notes: None,
+            when: None,
         }
     }
 
@@ -161,6 +202,11 @@ impl Predicate {
 
     pub fn with_notes(mut self, notes: impl Into<String>) -> Self {
         self.notes = Some(notes.into());
+        self
+    }
+
+    pub fn with_when(mut self, when: WhenCondition) -> Self {
+        self.when = Some(when);
         self
     }
 
@@ -185,6 +231,25 @@ impl Predicate {
             }
         }
         
+        // Validate when condition if present
+        if let Some(when) = &self.when {
+            if when.claim.trim().is_empty() {
+                return Err(anyhow!("When condition claim reference cannot be empty"));
+            }
+            // When conditions that need a value must have one
+            match when.rule {
+                PredicateRule::Exists | PredicateRule::NotExists => {}
+                _ => {
+                    if when.value.is_none() {
+                        return Err(anyhow!(
+                            "When condition rule '{}' requires a value",
+                            when.rule
+                        ));
+                    }
+                }
+            }
+        }
+
         Ok(())
     }
 }
@@ -232,6 +297,15 @@ impl Rulespec {
                     "Predicate references unknown claim: {}",
                     predicate.claim
                 ));
+            }
+            // Validate when condition claim reference
+            if let Some(when) = &predicate.when {
+                if !claim_names.contains(&when.claim) {
+                    return Err(anyhow!(
+                        "When condition references unknown claim: {}",
+                        when.claim
+                    ));
+                }
             }
         }
 
@@ -481,14 +555,22 @@ pub fn evaluate_predicate(
 ) -> PredicateResult {
     match predicate.rule {
         PredicateRule::Exists => {
-            if selected_values.is_empty() {
+            // Filter out null values — null means "absent"
+            let non_null: Vec<_> = selected_values.iter()
+                .filter(|v| !v.is_null())
+                .collect();
+            if non_null.is_empty() {
                 PredicateResult::fail("Value does not exist")
             } else {
                 PredicateResult::pass("Value exists")
             }
         }
         PredicateRule::NotExists => {
-            if selected_values.is_empty() {
+            // Filter out null values — null means "absent"
+            let non_null: Vec<_> = selected_values.iter()
+                .filter(|v| !v.is_null())
+                .collect();
+            if non_null.is_empty() {
                 PredicateResult::pass("Value does not exist as expected")
             } else {
                 PredicateResult::fail("Value exists but should not")
@@ -642,6 +724,65 @@ pub fn evaluate_predicate(
             }
             PredicateResult::fail(format!("No value matches pattern '{}'", pattern))
         }
+        PredicateRule::NotContains => {
+            let target = match &predicate.value {
+                Some(v) => v,
+                None => return PredicateResult::fail("No value specified for not_contains"),
+            };
+            
+            for value in selected_values {
+                if value_contains(value, target) {
+                    return PredicateResult::fail(format!(
+                        "Value contains {:?} but should not",
+                        yaml_to_display(target)
+                    ));
+                }
+            }
+            PredicateResult::pass(format!(
+                "Value does not contain {:?}",
+                yaml_to_display(target)
+            ))
+        }
+        PredicateRule::AnyOf => {
+            let allowed = match &predicate.value {
+                Some(YamlValue::Sequence(seq)) => seq,
+                Some(_) => return PredicateResult::fail("any_of requires an array value"),
+                None => return PredicateResult::fail("No value specified for any_of"),
+            };
+            
+            for value in selected_values {
+                if allowed.contains(value) {
+                    return PredicateResult::pass(format!(
+                        "Value {:?} is in allowed set",
+                        yaml_to_display(value)
+                    ));
+                }
+            }
+            PredicateResult::fail(format!(
+                "Value is not in allowed set [{}]",
+                allowed.iter().map(yaml_to_display).collect::<Vec<_>>().join(", ")
+            ))
+        }
+        PredicateRule::NoneOf => {
+            let forbidden = match &predicate.value {
+                Some(YamlValue::Sequence(seq)) => seq,
+                Some(_) => return PredicateResult::fail("none_of requires an array value"),
+                None => return PredicateResult::fail("No value specified for none_of"),
+            };
+            
+            for value in selected_values {
+                if forbidden.contains(value) {
+                    return PredicateResult::fail(format!(
+                        "Value {:?} is in forbidden set",
+                        yaml_to_display(value)
+                    ));
+                }
+            }
+            PredicateResult::pass(format!(
+                "Value is not in forbidden set [{}]",
+                forbidden.iter().map(yaml_to_display).collect::<Vec<_>>().join(", ")
+            ))
+        }
     }
 }
 
@@ -785,6 +926,41 @@ pub fn evaluate_rulespec(rulespec: &Rulespec, envelope: &ActionEnvelope) -> Rule
         .collect();
 
     for predicate in &rulespec.predicates {
+        // Check when condition — if present and not met, skip (vacuous pass)
+        if let Some(when) = &predicate.when {
+            let when_claim = claims.get(when.claim.as_str());
+            let when_met = match when_claim {
+                Some(claim) => {
+                    match Selector::parse(&claim.selector) {
+                        Ok(selector) => {
+                            let when_values = selector.select(&envelope_value);
+                            let when_pred = Predicate {
+                                claim: when.claim.clone(),
+                                rule: when.rule.clone(),
+                                value: when.value.clone(),
+                                source: predicate.source,
+                                notes: None,
+                                when: None,
+                            };
+                            evaluate_predicate(&when_pred, &when_values).passed
+                        }
+                        Err(_) => false,
+                    }
+                }
+                None => false,
+            };
+            if !when_met {
+                passed_count += 1;
+                predicate_results.push(PredicateEvaluation {
+                    predicate: predicate.clone(),
+                    claim_name: predicate.claim.clone(),
+                    selected_values: vec![],
+                    result: PredicateResult::pass("Skipped (when condition not met)"),
+                });
+                continue;
+            }
+        }
+
         let claim = claims.get(predicate.claim.as_str());
         
         let (selected_values, result) = match claim {
@@ -1445,5 +1621,412 @@ facts:
         assert_eq!(parsed.facts.len(), 2);
         assert_eq!(parsed.facts.get("breaking_changes").unwrap(), &YamlValue::Null);
         assert_eq!(parsed.facts.get("feature").unwrap(), &YamlValue::String("done".to_string()));
+    }
+
+    // ========================================================================
+    // New Predicate Rules: NotContains, AnyOf, NoneOf
+    // ========================================================================
+
+    #[test]
+    fn test_predicate_not_contains_array_pass() {
+        let predicate = Predicate::new("test", PredicateRule::NotContains, InvariantSource::TaskPrompt)
+            .with_value(YamlValue::String("deprecated".to_string()));
+
+        let array = YamlValue::Sequence(vec![
+            YamlValue::String("handle_csv".to_string()),
+            YamlValue::String("handle_tsv".to_string()),
+        ]);
+
+        let result = evaluate_predicate(&predicate, &[array]);
+        assert!(result.passed, "not_contains should pass when element is absent");
+    }
+
+    #[test]
+    fn test_predicate_not_contains_array_fail() {
+        let predicate = Predicate::new("test", PredicateRule::NotContains, InvariantSource::TaskPrompt)
+            .with_value(YamlValue::String("handle_csv".to_string()));
+
+        let array = YamlValue::Sequence(vec![
+            YamlValue::String("handle_csv".to_string()),
+            YamlValue::String("handle_tsv".to_string()),
+        ]);
+
+        let result = evaluate_predicate(&predicate, &[array]);
+        assert!(!result.passed, "not_contains should fail when element is present");
+    }
+
+    #[test]
+    fn test_predicate_not_contains_string_pass() {
+        let predicate = Predicate::new("test", PredicateRule::NotContains, InvariantSource::TaskPrompt)
+            .with_value(YamlValue::String("xml".to_string()));
+
+        let result = evaluate_predicate(
+            &predicate,
+            &[YamlValue::String("csv_importer".to_string())],
+        );
+        assert!(result.passed, "not_contains should pass when substring is absent");
+    }
+
+    #[test]
+    fn test_predicate_not_contains_string_fail() {
+        let predicate = Predicate::new("test", PredicateRule::NotContains, InvariantSource::TaskPrompt)
+            .with_value(YamlValue::String("csv".to_string()));
+
+        let result = evaluate_predicate(
+            &predicate,
+            &[YamlValue::String("csv_importer".to_string())],
+        );
+        assert!(!result.passed, "not_contains should fail when substring is present");
+    }
+
+    #[test]
+    fn test_predicate_not_contains_empty_array() {
+        let predicate = Predicate::new("test", PredicateRule::NotContains, InvariantSource::TaskPrompt)
+            .with_value(YamlValue::String("anything".to_string()));
+
+        let array = YamlValue::Sequence(vec![]);
+        let result = evaluate_predicate(&predicate, &[array]);
+        assert!(result.passed, "not_contains on empty array should pass");
+    }
+
+    #[test]
+    fn test_predicate_any_of_pass() {
+        let predicate = Predicate::new("test", PredicateRule::AnyOf, InvariantSource::TaskPrompt)
+            .with_value(YamlValue::Sequence(vec![
+                YamlValue::String("json".to_string()),
+                YamlValue::String("yaml".to_string()),
+                YamlValue::String("toml".to_string()),
+            ]));
+
+        let result = evaluate_predicate(
+            &predicate,
+            &[YamlValue::String("yaml".to_string())],
+        );
+        assert!(result.passed, "any_of should pass when value is in set");
+    }
+
+    #[test]
+    fn test_predicate_any_of_fail() {
+        let predicate = Predicate::new("test", PredicateRule::AnyOf, InvariantSource::TaskPrompt)
+            .with_value(YamlValue::Sequence(vec![
+                YamlValue::String("json".to_string()),
+                YamlValue::String("yaml".to_string()),
+            ]));
+
+        let result = evaluate_predicate(
+            &predicate,
+            &[YamlValue::String("xml".to_string())],
+        );
+        assert!(!result.passed, "any_of should fail when value is not in set");
+    }
+
+    #[test]
+    fn test_predicate_any_of_non_array_value_fails() {
+        let predicate = Predicate::new("test", PredicateRule::AnyOf, InvariantSource::TaskPrompt)
+            .with_value(YamlValue::String("not_an_array".to_string()));
+
+        let result = evaluate_predicate(
+            &predicate,
+            &[YamlValue::String("anything".to_string())],
+        );
+        assert!(!result.passed, "any_of with non-array value should fail");
+    }
+
+    #[test]
+    fn test_predicate_any_of_single_element() {
+        let predicate = Predicate::new("test", PredicateRule::AnyOf, InvariantSource::TaskPrompt)
+            .with_value(YamlValue::Sequence(vec![
+                YamlValue::String("only".to_string()),
+            ]));
+
+        let result = evaluate_predicate(
+            &predicate,
+            &[YamlValue::String("only".to_string())],
+        );
+        assert!(result.passed, "any_of with single-element set should work");
+    }
+
+    #[test]
+    fn test_predicate_none_of_pass() {
+        let predicate = Predicate::new("test", PredicateRule::NoneOf, InvariantSource::TaskPrompt)
+            .with_value(YamlValue::Sequence(vec![
+                YamlValue::String("xml".to_string()),
+                YamlValue::String("csv".to_string()),
+            ]));
+
+        let result = evaluate_predicate(
+            &predicate,
+            &[YamlValue::String("json".to_string())],
+        );
+        assert!(result.passed, "none_of should pass when value is not in forbidden set");
+    }
+
+    #[test]
+    fn test_predicate_none_of_fail() {
+        let predicate = Predicate::new("test", PredicateRule::NoneOf, InvariantSource::TaskPrompt)
+            .with_value(YamlValue::Sequence(vec![
+                YamlValue::String("xml".to_string()),
+                YamlValue::String("csv".to_string()),
+            ]));
+
+        let result = evaluate_predicate(
+            &predicate,
+            &[YamlValue::String("xml".to_string())],
+        );
+        assert!(!result.passed, "none_of should fail when value is in forbidden set");
+    }
+
+    #[test]
+    fn test_predicate_none_of_non_array_value_fails() {
+        let predicate = Predicate::new("test", PredicateRule::NoneOf, InvariantSource::TaskPrompt)
+            .with_value(YamlValue::String("not_an_array".to_string()));
+
+        let result = evaluate_predicate(
+            &predicate,
+            &[YamlValue::String("anything".to_string())],
+        );
+        assert!(!result.passed, "none_of with non-array value should fail");
+    }
+
+    #[test]
+    fn test_predicate_none_of_empty_forbidden_set() {
+        let predicate = Predicate::new("test", PredicateRule::NoneOf, InvariantSource::TaskPrompt)
+            .with_value(YamlValue::Sequence(vec![]));
+
+        let result = evaluate_predicate(
+            &predicate,
+            &[YamlValue::String("anything".to_string())],
+        );
+        assert!(result.passed, "none_of with empty forbidden set should pass");
+    }
+
+    // ========================================================================
+    // Null Handling Tests
+    // ========================================================================
+
+    #[test]
+    fn test_predicate_exists_fails_for_null() {
+        let predicate = Predicate::new("test", PredicateRule::Exists, InvariantSource::TaskPrompt);
+
+        let result = evaluate_predicate(&predicate, &[YamlValue::Null]);
+        assert!(!result.passed, "exists should fail for null value");
+    }
+
+    #[test]
+    fn test_predicate_not_exists_passes_for_null() {
+        let predicate = Predicate::new("test", PredicateRule::NotExists, InvariantSource::TaskPrompt);
+
+        let result = evaluate_predicate(&predicate, &[YamlValue::Null]);
+        assert!(result.passed, "not_exists should pass for null value");
+    }
+
+    #[test]
+    fn test_predicate_exists_passes_for_empty_string() {
+        let predicate = Predicate::new("test", PredicateRule::Exists, InvariantSource::TaskPrompt);
+
+        let result = evaluate_predicate(&predicate, &[YamlValue::String(String::new())]);
+        assert!(result.passed, "exists should pass for empty string (not null)");
+    }
+
+    #[test]
+    fn test_predicate_exists_passes_for_empty_array() {
+        let predicate = Predicate::new("test", PredicateRule::Exists, InvariantSource::TaskPrompt);
+
+        let result = evaluate_predicate(&predicate, &[YamlValue::Sequence(vec![])]);
+        assert!(result.passed, "exists should pass for empty array (not null)");
+    }
+
+    #[test]
+    fn test_predicate_contains_on_null_fails() {
+        let predicate = Predicate::new("test", PredicateRule::Contains, InvariantSource::TaskPrompt)
+            .with_value(YamlValue::String("x".to_string()));
+
+        let result = evaluate_predicate(&predicate, &[YamlValue::Null]);
+        assert!(!result.passed, "contains on null should fail");
+    }
+
+    #[test]
+    fn test_predicate_exists_with_mixed_null_and_value() {
+        let predicate = Predicate::new("test", PredicateRule::Exists, InvariantSource::TaskPrompt);
+
+        // If selected_values has both null and a real value, exists should pass
+        let result = evaluate_predicate(
+            &predicate,
+            &[YamlValue::Null, YamlValue::String("real".to_string())],
+        );
+        assert!(result.passed, "exists should pass when at least one non-null value");
+    }
+
+    #[test]
+    fn test_predicate_not_exists_fails_with_mixed_null_and_value() {
+        let predicate = Predicate::new("test", PredicateRule::NotExists, InvariantSource::TaskPrompt);
+
+        let result = evaluate_predicate(
+            &predicate,
+            &[YamlValue::Null, YamlValue::String("real".to_string())],
+        );
+        assert!(!result.passed, "not_exists should fail when at least one non-null value");
+    }
+
+    // ========================================================================
+    // When Condition Tests
+    // ========================================================================
+
+    #[test]
+    fn test_when_condition_met_evaluates_predicate() {
+        let mut rulespec = Rulespec::new();
+        rulespec.add_claim(Claim::new("is_breaking", "api_changes.breaking"));
+        rulespec.add_claim(Claim::new("caps", "feature.capabilities"));
+        rulespec.add_predicate(
+            Predicate::new("caps", PredicateRule::MinLength, InvariantSource::TaskPrompt)
+                .with_value(YamlValue::Number(2.into()))
+                .with_when(WhenCondition::new("is_breaking", PredicateRule::Equals)
+                    .with_value(YamlValue::Bool(true)))
+        );
+
+        let mut envelope = ActionEnvelope::new();
+        envelope.add_fact("api_changes", serde_yaml::from_str("breaking: true").unwrap());
+        envelope.add_fact("feature", serde_yaml::from_str("capabilities: [a, b, c]").unwrap());
+
+        let eval = evaluate_rulespec(&rulespec, &envelope);
+        assert_eq!(eval.passed_count, 1);
+        assert_eq!(eval.failed_count, 0);
+    }
+
+    #[test]
+    fn test_when_condition_not_met_vacuous_pass() {
+        let mut rulespec = Rulespec::new();
+        rulespec.add_claim(Claim::new("is_breaking", "api_changes.breaking"));
+        rulespec.add_claim(Claim::new("caps", "feature.capabilities"));
+        rulespec.add_predicate(
+            Predicate::new("caps", PredicateRule::MinLength, InvariantSource::TaskPrompt)
+                .with_value(YamlValue::Number(100.into())) // would fail if evaluated
+                .with_when(WhenCondition::new("is_breaking", PredicateRule::Equals)
+                    .with_value(YamlValue::Bool(true)))
+        );
+
+        let mut envelope = ActionEnvelope::new();
+        envelope.add_fact("api_changes", serde_yaml::from_str("breaking: false").unwrap());
+        envelope.add_fact("feature", serde_yaml::from_str("capabilities: [a]").unwrap());
+
+        let eval = evaluate_rulespec(&rulespec, &envelope);
+        assert_eq!(eval.passed_count, 1, "When not met should be vacuous pass");
+        assert_eq!(eval.failed_count, 0);
+        assert!(eval.predicate_results[0].result.reason.contains("Skipped"));
+    }
+
+    #[test]
+    fn test_when_condition_with_exists() {
+        let mut rulespec = Rulespec::new();
+        rulespec.add_claim(Claim::new("has_tests", "feature.tests"));
+        rulespec.add_claim(Claim::new("coverage", "feature.coverage"));
+        rulespec.add_predicate(
+            Predicate::new("coverage", PredicateRule::GreaterThan, InvariantSource::TaskPrompt)
+                .with_value(YamlValue::Number(80.into()))
+                .with_when(WhenCondition::new("has_tests", PredicateRule::Exists))
+        );
+
+        // No tests field → when condition not met → vacuous pass
+        let mut envelope = ActionEnvelope::new();
+        envelope.add_fact("feature", serde_yaml::from_str("coverage: 50").unwrap());
+
+        let eval = evaluate_rulespec(&rulespec, &envelope);
+        assert_eq!(eval.passed_count, 1, "When exists not met should skip");
+        assert_eq!(eval.failed_count, 0);
+    }
+
+    #[test]
+    fn test_when_unknown_claim_fails_validation() {
+        let mut rulespec = Rulespec::new();
+        rulespec.add_claim(Claim::new("caps", "feature.capabilities"));
+        rulespec.add_predicate(
+            Predicate::new("caps", PredicateRule::Exists, InvariantSource::TaskPrompt)
+                .with_when(WhenCondition::new("nonexistent", PredicateRule::Exists))
+        );
+
+        let result = rulespec.validate();
+        assert!(result.is_err(), "When referencing unknown claim should fail validation");
+        assert!(result.unwrap_err().to_string().contains("unknown claim"));
+    }
+
+    #[test]
+    fn test_predicate_without_when_always_evaluated() {
+        // Backward compatibility: no when field means always evaluated
+        let mut rulespec = Rulespec::new();
+        rulespec.add_claim(Claim::new("caps", "feature.capabilities"));
+        rulespec.add_predicate(
+            Predicate::new("caps", PredicateRule::Exists, InvariantSource::TaskPrompt)
+        );
+
+        let mut envelope = ActionEnvelope::new();
+        envelope.add_fact("feature", serde_yaml::from_str("capabilities: [a]").unwrap());
+
+        let eval = evaluate_rulespec(&rulespec, &envelope);
+        assert_eq!(eval.passed_count, 1);
+        assert_eq!(eval.failed_count, 0);
+    }
+
+    #[test]
+    fn test_when_condition_validate_requires_value() {
+        let when = WhenCondition::new("test", PredicateRule::Equals);
+        // No value set — validation should catch this
+        let predicate = Predicate::new("test", PredicateRule::Exists, InvariantSource::TaskPrompt)
+            .with_when(when);
+        let result = predicate.validate();
+        assert!(result.is_err(), "When condition with equals but no value should fail");
+    }
+
+    #[test]
+    fn test_when_condition_exists_no_value_ok() {
+        let when = WhenCondition::new("test", PredicateRule::Exists);
+        let predicate = Predicate::new("test", PredicateRule::Exists, InvariantSource::TaskPrompt)
+            .with_when(when);
+        let result = predicate.validate();
+        assert!(result.is_ok(), "When condition with exists and no value should be ok");
+    }
+
+    #[test]
+    fn test_evaluate_rulespec_with_new_rules_full() {
+        let mut rulespec = Rulespec::new();
+        rulespec.add_claim(Claim::new("caps", "feature.capabilities"));
+        rulespec.add_claim(Claim::new("format", "feature.output_format"));
+        rulespec.add_claim(Claim::new("breaking", "breaking_changes"));
+
+        // not_contains: must not have deprecated
+        rulespec.add_predicate(
+            Predicate::new("caps", PredicateRule::NotContains, InvariantSource::TaskPrompt)
+                .with_value(YamlValue::String("deprecated".to_string()))
+        );
+        // any_of: format must be json or yaml
+        rulespec.add_predicate(
+            Predicate::new("format", PredicateRule::AnyOf, InvariantSource::TaskPrompt)
+                .with_value(YamlValue::Sequence(vec![
+                    YamlValue::String("json".to_string()),
+                    YamlValue::String("yaml".to_string()),
+                ]))
+        );
+        // none_of: format must not be xml or csv
+        rulespec.add_predicate(
+            Predicate::new("format", PredicateRule::NoneOf, InvariantSource::TaskPrompt)
+                .with_value(YamlValue::Sequence(vec![
+                    YamlValue::String("xml".to_string()),
+                    YamlValue::String("csv".to_string()),
+                ]))
+        );
+        // not_exists: no breaking changes
+        rulespec.add_predicate(
+            Predicate::new("breaking", PredicateRule::NotExists, InvariantSource::TaskPrompt)
+        );
+
+        let mut envelope = ActionEnvelope::new();
+        envelope.add_fact("feature", serde_yaml::from_str(r#"
+            capabilities: [handle_csv, handle_tsv]
+            output_format: json
+        "#).unwrap());
+        envelope.add_fact("breaking_changes", YamlValue::Null);
+
+        let eval = evaluate_rulespec(&rulespec, &envelope);
+        assert_eq!(eval.passed_count, 4, "All 4 predicates should pass");
+        assert_eq!(eval.failed_count, 0);
     }
 }

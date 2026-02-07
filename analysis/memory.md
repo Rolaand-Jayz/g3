@@ -1,5 +1,5 @@
 # Workspace Memory
-> Updated: 2026-02-07T03:33:32Z | Size: 24.6k chars
+> Updated: 2026-02-07T05:28:12Z | Size: 26.3k chars
 
 ### Remember Tool Wiring
 - `crates/g3-core/src/tools/memory.rs` [0..5000] - `execute_remember()`, `get_memory_path()`, `merge_memory()`
@@ -413,3 +413,20 @@ Makes tool output responsive to terminal width - no line wrapping, with 4-char r
 - New unit tests: `test_extract_facts_with_facts_prefix_selector`, `test_extract_facts_roundtrip_from_yaml`, `test_execute_rules_full_pipeline_with_facts_prefix`, `test_execute_rules_full_pipeline_without_facts_prefix`
 - New integration tests: `test_plan_verify_rulespec_with_facts_prefix_selectors`, `test_plan_verify_mixed_pass_fail`
 - Strengthened: `test_plan_verify_with_analysis_rulespec` now asserts `Facts extracted: 0` is NOT in output
+
+### Solon Agent (Rulespec Authoring)
+- `agents/solon.md` [0..10800] - Interactive rulespec authoring agent prompt
+  - Full reference for all 9 PredicateRule types: exists, not_exists, equals, contains, greater_than, less_than, min_length, max_length, matches
+  - Selector syntax (dot/index/wildcard), envelope format, verification pipeline
+  - Mandatory write_envelope validation step, common mistakes section
+- `crates/g3-cli/src/embedded_agents.rs` [26] - solon registered in EMBEDDED_AGENTS
+- `crates/g3-cli/src/agent_mode.rs` [42] - solon in available agents error message
+- **Usage**: `g3 --agent solon` for interactive rulespec authoring
+- **Agent count**: 9 embedded agents (was 8)
+
+### When Condition Bugfix (2026-02-07)
+- `crates/g3-core/src/tools/datalog.rs` [377..395] - `execute_rules()` when condition evaluation
+- **Bug**: The `_ =>` catch-all in when condition evaluation did naive string `contains` check. For `Matches` (regex like `^Re: `), it checked if fact values literally contained the regex pattern string — which never matched. Result: when conditions with `matches` rule always evaluated as not-met → vacuous pass → violations slipped through.
+- **Fix**: Replaced hand-rolled when evaluation with synthetic `CompiledPredicate` delegation to `evaluate_predicate_datalog()`, which handles all 12 rule types correctly.
+- **Tests**: `test_execute_rules_when_matches_condition_met`, `test_execute_rules_when_matches_condition_met_but_predicate_fails`, `test_execute_rules_when_matches_condition_not_met`
+- **Note**: The `invariants.rs` path was NOT affected — it already delegated to `evaluate_predicate()` which handles all rules.

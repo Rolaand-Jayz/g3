@@ -98,7 +98,7 @@ pub async fn run_agent_mode(
     // Load agent prompt: workspace agents/<name>.md first, then embedded fallback
     let (agent_prompt, from_disk) = load_agent_prompt(agent_name, &workspace_dir).ok_or_else(|| {
         anyhow::anyhow!(
-            "Agent '{}' not found.\nAvailable embedded agents: breaker, carmack, euler, fowler, hopper, lamport, scout\nOr create agents/{}.md in your workspace.",
+            "Agent '{}' not found.\nAvailable embedded agents: breaker, carmack, euler, fowler, hopper, lamport, scout, solon\nOr create agents/{}.md in your workspace.",
             agent_name,
             agent_name
         )
