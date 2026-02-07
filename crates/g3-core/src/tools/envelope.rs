@@ -57,6 +57,22 @@ pub async fn execute_write_envelope<W: UiWriter>(
         Err(e) => return Ok(format!("❌ Invalid envelope YAML: {}", e)),
     };
 
+    // Validate that facts is non-empty. This catches the common mistake where
+    // the agent sends a raw YAML map without the required `facts:` top-level key.
+    // serde silently ignores unknown fields and defaults `facts` to an empty HashMap,
+    // so we must check explicitly.
+    if envelope.facts.is_empty() {
+        return Ok(
+            "❌ Envelope has empty facts. The YAML must contain a non-empty `facts` top-level key. Example:\n\n\
+             ```yaml\n\
+             facts:\n\
+             \x20 my_feature:\n\
+             \x20   capabilities: [feature_a, feature_b]\n\
+             \x20   file: \"src/my_feature.rs\"\n\
+             ```".to_string()
+        );
+    }
+
     // Write the envelope to disk
     if let Err(e) = write_envelope(session_id, &envelope) {
         return Ok(format!("❌ Failed to write envelope: {}", e));

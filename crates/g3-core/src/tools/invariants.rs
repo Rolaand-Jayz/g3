@@ -1363,4 +1363,87 @@ mod tests {
         assert!(output.contains("**breaking_changes**:"));
         assert!(output.contains("_null_"));
     }
+
+    // ========================================================================
+    // ActionEnvelope Deserialization Validation Tests
+    // ========================================================================
+
+    #[test]
+    fn test_envelope_deser_with_facts_key() {
+        // Valid: YAML with facts: top-level key
+        let yaml = r#"
+facts:
+  csv_importer:
+    capabilities:
+      - handle_headers
+      - handle_tsv
+    file: src/import/csv.rs
+"#;
+        let envelope: ActionEnvelope = serde_yaml::from_str(yaml).unwrap();
+        assert!(!envelope.facts.is_empty());
+        assert!(envelope.facts.contains_key("csv_importer"));
+    }
+
+    #[test]
+    fn test_envelope_deser_without_facts_key_is_empty() {
+        // Bug scenario: YAML without facts: wrapper silently produces empty facts
+        let yaml = r#"
+csv_importer:
+  capabilities:
+    - handle_headers
+    - handle_tsv
+  file: src/import/csv.rs
+"#;
+        let envelope: ActionEnvelope = serde_yaml::from_str(yaml).unwrap();
+        // serde silently ignores unknown fields, facts defaults to empty
+        assert!(envelope.facts.is_empty(), "Expected empty facts when 'facts:' key is missing");
+    }
+
+    #[test]
+    fn test_envelope_deser_empty_facts_is_empty() {
+        let yaml = "facts: {}";
+        let envelope: ActionEnvelope = serde_yaml::from_str(yaml).unwrap();
+        assert!(envelope.facts.is_empty());
+    }
+
+    #[test]
+    fn test_envelope_deser_facts_with_null_values() {
+        let yaml = r#"
+facts:
+  breaking_changes: null
+  csv_importer:
+    file: src/import/csv.rs
+"#;
+        let envelope: ActionEnvelope = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(envelope.facts.len(), 2);
+        assert!(envelope.facts.contains_key("breaking_changes"));
+        assert_eq!(envelope.facts.get("breaking_changes").unwrap(), &YamlValue::Null);
+        assert!(envelope.facts.contains_key("csv_importer"));
+    }
+
+    #[test]
+    fn test_envelope_deser_facts_single_key() {
+        let yaml = r#"
+facts:
+  my_feature:
+    file: src/my_feature.rs
+"#;
+        let envelope: ActionEnvelope = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(envelope.facts.len(), 1);
+        assert!(envelope.facts.contains_key("my_feature"));
+    }
+
+    #[test]
+    fn test_envelope_roundtrip_preserves_null_facts() {
+        let mut envelope = ActionEnvelope::new();
+        envelope.add_fact("breaking_changes", YamlValue::Null);
+        envelope.add_fact("feature", YamlValue::String("done".to_string()));
+
+        let yaml = serde_yaml::to_string(&envelope).unwrap();
+        let parsed: ActionEnvelope = serde_yaml::from_str(&yaml).unwrap();
+
+        assert_eq!(parsed.facts.len(), 2);
+        assert_eq!(parsed.facts.get("breaking_changes").unwrap(), &YamlValue::Null);
+        assert_eq!(parsed.facts.get("feature").unwrap(), &YamlValue::String("done".to_string()));
+    }
 }
