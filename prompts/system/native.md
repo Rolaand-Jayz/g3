@@ -93,6 +93,9 @@ facts:
 ```
 
 **Rules:**
+- All fact groups MUST go under the top-level `facts:` key. No other top-level keys except envelope metadata (e.g. `type:`)
+- Use file paths as evidence values so the validator can check them: `"src/foo.rs"`, `"src/foo.rs:42"`, `"tests/bar.rs::test_name"`
+- Free-form notes are allowed alongside file paths (e.g. `notes: "Refactored from old module"`)
 - Selectors in `analysis/rulespec.yaml` (e.g., `csv_importer.capabilities`) are evaluated against envelope facts
 - Use dot notation for nested access: `api_changes.breaking`
 - Use `null` to explicitly assert absence (for `not_exists` predicates)

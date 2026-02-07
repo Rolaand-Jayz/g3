@@ -188,6 +188,10 @@ pub struct Fact {
 pub fn extract_facts(envelope: &ActionEnvelope, compiled: &CompiledRulespec) -> HashSet<Fact> {
     let mut facts = HashSet::new();
     let envelope_value = envelope.to_yaml_value();
+    // Build a "facts"-wrapped version so selectors with a "facts." prefix also work.
+    let mut wrapped = serde_yaml::Mapping::new();
+    wrapped.insert(YamlValue::String("facts".into()), envelope_value.clone());
+    let wrapped_value = YamlValue::Mapping(wrapped);
 
     for (claim_name, selector_str) in &compiled.claims {
         let selector = match Selector::parse(selector_str) {
@@ -196,6 +200,16 @@ pub fn extract_facts(envelope: &ActionEnvelope, compiled: &CompiledRulespec) -> 
         };
 
         let values = selector.select(&envelope_value);
+
+        // If the selector didn't match anything on the unwrapped value,
+        // try against the "facts"-wrapped version. This handles rulespec
+        // selectors written as "facts.feature.done" when the envelope
+        // stores facts without the "facts" wrapper key.
+        let values = if values.is_empty() {
+            selector.select(&wrapped_value)
+        } else {
+            values
+        };
 
         for value in values {
             // Extract individual values from the selected result
@@ -967,6 +981,64 @@ mod tests {
         }));
     }
 
+    #[test]
+    fn test_extract_facts_with_facts_prefix_selector() {
+        // Simulate a rulespec that uses "facts." prefix in selectors
+        // (common when rulespec authors think of the envelope YAML structure
+        // which has a top-level "facts:" key)
+        let mut envelope = ActionEnvelope::new();
+        envelope.add_fact(
+            "csv_importer",
+            serde_yaml::from_str("capabilities: [handle_csv, handle_tsv]\nfile: src/csv.rs").unwrap(),
+        );
+
+        let mut rulespec = Rulespec::new();
+        // Selector uses "facts." prefix — should still work via fallback
+        rulespec.claims.push(Claim::new("caps", "facts.csv_importer.capabilities"));
+        rulespec.claims.push(Claim::new("file", "facts.csv_importer.file"));
+        let compiled = compile_rulespec(&rulespec, "test", 1).unwrap();
+
+        let facts = extract_facts(&envelope, &compiled);
+
+        assert!(!facts.is_empty(), "Should extract facts even with 'facts.' prefix selector");
+        assert!(facts.contains(&Fact {
+            claim_name: "caps".to_string(),
+            value: "handle_csv".to_string(),
+        }));
+        assert!(facts.contains(&Fact {
+            claim_name: "caps".to_string(),
+            value: "handle_tsv".to_string(),
+        }));
+        assert!(facts.contains(&Fact {
+            claim_name: "file".to_string(),
+            value: "src/csv.rs".to_string(),
+        }));
+    }
+
+    #[test]
+    fn test_extract_facts_roundtrip_from_yaml() {
+        // Simulate the real write_envelope → read_envelope → extract_facts flow
+        let yaml = "facts:\n  feature:\n    done: true\n    capabilities: [handle_csv, handle_tsv]\n    file: src/lib.rs";
+        let envelope: ActionEnvelope = serde_yaml::from_str(yaml).unwrap();
+        assert!(!envelope.facts.is_empty(), "Envelope should have facts after parsing");
+
+        let mut rulespec = Rulespec::new();
+        rulespec.claims.push(Claim::new("feature_done", "feature.done"));
+        rulespec.claims.push(Claim::new("caps", "feature.capabilities"));
+        let compiled = compile_rulespec(&rulespec, "test", 1).unwrap();
+
+        let facts = extract_facts(&envelope, &compiled);
+        assert!(!facts.is_empty(), "Should extract facts from round-tripped envelope");
+        assert!(facts.contains(&Fact {
+            claim_name: "feature_done".to_string(),
+            value: "true".to_string(),
+        }));
+        assert!(facts.contains(&Fact {
+            claim_name: "caps".to_string(),
+            value: "handle_csv".to_string(),
+        }));
+    }
+
     // ========================================================================
     // Execution Tests
     // ========================================================================
@@ -1203,6 +1275,71 @@ mod tests {
         assert!(output.contains("shadow mode"));
         assert!(output.contains("✅"));
         assert!(output.contains("Facts extracted:"));
+    }
+
+    #[test]
+    fn test_execute_rules_full_pipeline_with_facts_prefix() {
+        // End-to-end: YAML envelope → extract_facts (with facts. prefix) → execute_rules
+        let yaml = "facts:\n  my_feature:\n    capabilities: [fast_search, caching]\n    file: src/search.rs\n    breaking: false";
+        let envelope: ActionEnvelope = serde_yaml::from_str(yaml).unwrap();
+
+        let mut rulespec = Rulespec::new();
+        // Use facts. prefix selectors (the common mistake)
+        rulespec.claims.push(Claim::new("caps", "facts.my_feature.capabilities"));
+        rulespec.claims.push(Claim::new("file", "facts.my_feature.file"));
+        rulespec.claims.push(Claim::new("breaking", "facts.my_feature.breaking"));
+        rulespec.predicates.push(
+            Predicate::new("caps", PredicateRule::Contains, InvariantSource::TaskPrompt)
+                .with_value(YamlValue::String("fast_search".to_string())),
+        );
+        rulespec.predicates.push(
+            Predicate::new("file", PredicateRule::Exists, InvariantSource::TaskPrompt),
+        );
+        rulespec.predicates.push(
+            Predicate::new("breaking", PredicateRule::Equals, InvariantSource::TaskPrompt)
+                .with_value(YamlValue::String("false".to_string())),
+        );
+
+        let compiled = compile_rulespec(&rulespec, "test", 1).unwrap();
+        let facts = extract_facts(&envelope, &compiled);
+        assert!(facts.len() > 0, "Should extract facts with facts. prefix selectors");
+
+        let result = execute_rules(&compiled, &facts);
+        assert_eq!(result.fact_count, facts.len());
+        assert!(result.all_passed(), "All predicates should pass: {:?}",
+            result.predicate_results.iter()
+                .filter(|r| !r.passed)
+                .map(|r| format!("{}: {}", r.claim_name, r.reason))
+                .collect::<Vec<_>>());
+        assert_eq!(result.passed_count, 3);
+        assert_eq!(result.failed_count, 0);
+    }
+
+    #[test]
+    fn test_execute_rules_full_pipeline_without_facts_prefix() {
+        // End-to-end: YAML envelope → extract_facts (without facts. prefix) → execute_rules
+        let yaml = "facts:\n  my_feature:\n    capabilities: [fast_search, caching]\n    file: src/search.rs";
+        let envelope: ActionEnvelope = serde_yaml::from_str(yaml).unwrap();
+
+        let mut rulespec = Rulespec::new();
+        // Use direct selectors (no facts. prefix)
+        rulespec.claims.push(Claim::new("caps", "my_feature.capabilities"));
+        rulespec.claims.push(Claim::new("file", "my_feature.file"));
+        rulespec.predicates.push(
+            Predicate::new("caps", PredicateRule::Contains, InvariantSource::TaskPrompt)
+                .with_value(YamlValue::String("caching".to_string())),
+        );
+        rulespec.predicates.push(
+            Predicate::new("file", PredicateRule::Exists, InvariantSource::TaskPrompt),
+        );
+
+        let compiled = compile_rulespec(&rulespec, "test", 1).unwrap();
+        let facts = extract_facts(&envelope, &compiled);
+        assert!(facts.len() > 0, "Should extract facts without facts. prefix");
+
+        let result = execute_rules(&compiled, &facts);
+        assert!(result.all_passed());
+        assert_eq!(result.passed_count, 2);
     }
 
     // ========================================================================

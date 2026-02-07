@@ -1,5 +1,5 @@
 # Workspace Memory
-> Updated: 2026-02-07T01:27:41Z | Size: 23.6k chars
+> Updated: 2026-02-07T03:33:32Z | Size: 24.6k chars
 
 ### Remember Tool Wiring
 - `crates/g3-core/src/tools/memory.rs` [0..5000] - `execute_remember()`, `get_memory_path()`, `merge_memory()`
@@ -406,3 +406,10 @@ Makes tool output responsive to terminal width - no line wrapping, with 4-char r
   - Length facts (`__length` suffix) go into `claim_length` relation
 - `crates/g3-core/src/tools/envelope.rs` [150] - `verify_envelope()` now calls `format_datalog_program()` instead of `serde_yaml::to_string()`
 - **Bug fixed**: `.dl` files previously contained YAML (just serialized CompiledRulespec), now contain actual Soufflé datalog
+
+### Datalog Fact Extraction Fix (2026-02-07)
+- `crates/g3-core/src/tools/datalog.rs` [188..207] - `extract_facts()` now has fallback: if selector returns empty on unwrapped envelope value, retries against a `facts`-wrapped version. This handles rulespec selectors written as `facts.feature.done` when `to_yaml_value()` strips the `facts:` wrapper.
+- Root cause: `ActionEnvelope.to_yaml_value()` creates a Mapping from the `facts` HashMap WITHOUT a `facts` key wrapper, but rulespec selectors may include a `facts.` prefix.
+- New unit tests: `test_extract_facts_with_facts_prefix_selector`, `test_extract_facts_roundtrip_from_yaml`, `test_execute_rules_full_pipeline_with_facts_prefix`, `test_execute_rules_full_pipeline_without_facts_prefix`
+- New integration tests: `test_plan_verify_rulespec_with_facts_prefix_selectors`, `test_plan_verify_mixed_pass_fail`
+- Strengthened: `test_plan_verify_with_analysis_rulespec` now asserts `Facts extracted: 0` is NOT in output

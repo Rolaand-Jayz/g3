@@ -199,7 +199,7 @@ fn create_core_tools() -> Vec<Tool> {
             "properties": {
                 "facts": {
                     "type": "string",
-                    "description": "The envelope facts as YAML. A map of named fact groups, each containing evidence about completed work (capabilities, files, tests, etc.)."
+                    "description": "The envelope facts as YAML. MUST have a top-level `facts:` key containing all fact groups. No other top-level keys are allowed except envelope metadata (e.g. `type:`). Each fact group is a named map under `facts:`. Use file paths for evidence so the validator can verify them (e.g. `src/foo.rs`, `src/foo.rs:42`, `tests/bar.rs::test_name`). Free-form notes can go alongside paths.\n\nExample:\n\nfacts:\n  csv_importer:\n    capabilities: [handle_headers, handle_tsv]\n    file: \"src/import/csv.rs\"\n    tests: [\"test_valid_csv\", \"test_missing_column\"]\n  api_changes:\n    breaking: false\n  breaking_changes: null"
                 }
             },
             "required": ["facts"]

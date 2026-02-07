@@ -627,8 +627,12 @@ predicates:
 
         // Verify evaluation content shows pass
         let eval_content = fs::read_to_string(&eval_path).unwrap();
-        assert!(eval_content.contains("satisfied") || eval_content.contains("PASS"),
+        assert!(eval_content.contains("satisfied"),
             "Evaluation should show passing results: {}", eval_content);
+
+        // Verify facts were actually extracted (not zero)
+        assert!(!eval_content.contains("Facts extracted: 0"),
+            "Should have extracted facts: {}", eval_content);
     }
 
     /// Test: plan_verify works gracefully when analysis/rulespec.yaml is absent
@@ -730,5 +734,132 @@ predicates:
         let eval_content = fs::read_to_string(&eval_path).unwrap();
         assert!(eval_content.contains("FAIL") || eval_content.contains("fail"),
             "Evaluation should show failing results: {}", eval_content);
+    }
+
+    /// Test: write_envelope with facts. prefix selectors in rulespec still extracts facts
+    #[tokio::test]
+    #[serial]
+    async fn test_plan_verify_rulespec_with_facts_prefix_selectors() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut agent = create_test_agent(&temp_dir).await;
+
+        agent.init_session_id_for_test("datalog-facts-prefix-test");
+        let session_id = agent.get_session_id().unwrap().to_string();
+
+        // Write a plan and approve it
+        let write_call = make_tool_call(
+            "plan_write",
+            serde_json::json!({
+                "plan": "plan_id: datalog-test\nrevision: 1\nitems:\n  - id: I1\n    description: Implement feature\n    state: todo\n    touches: [src/lib.rs]\n    checks:\n      happy: {desc: Works, target: lib}\n      negative: [{desc: Errors, target: lib}]\n      boundary: [{desc: Edge, target: lib}]"
+            }),
+        );
+        agent.execute_tool(&write_call).await.unwrap();
+        let approve_call = make_tool_call("plan_approve", serde_json::json!({}));
+        agent.execute_tool(&approve_call).await.unwrap();
+
+        // Create a dummy evidence file
+        let src_dir = temp_dir.path().join("src");
+        fs::create_dir_all(&src_dir).unwrap();
+        fs::write(src_dir.join("lib.rs"), "// test file").unwrap();
+
+        // Write rulespec with facts. prefix selectors
+        let analysis_dir = temp_dir.path().join("analysis");
+        fs::create_dir_all(&analysis_dir).unwrap();
+        fs::write(
+            analysis_dir.join("rulespec.yaml"),
+            "claims:\n  - name: feature_done\n    selector: facts.feature.done\n  - name: caps\n    selector: facts.feature.capabilities\npredicates:\n  - claim: feature_done\n    rule: exists\n    source: task_prompt\n    notes: Feature must be marked done\n  - claim: caps\n    rule: contains\n    value: handle_csv\n    source: task_prompt\n    notes: Must support CSV\n",
+        )
+        .unwrap();
+
+        // Call write_envelope
+        let envelope_call = make_tool_call(
+            "write_envelope",
+            serde_json::json!({
+                "facts": "facts:\n  feature:\n    done: true\n    capabilities: [handle_csv, handle_tsv]\n    file: src/lib.rs"
+            }),
+        );
+        let result = agent.execute_tool(&envelope_call).await.unwrap();
+        assert!(result.contains("Envelope written"), "Should confirm envelope written: {}", result);
+
+        // Check evaluation file
+        let session_dir = temp_dir
+            .path()
+            .join(".g3")
+            .join("sessions")
+            .join(&session_id);
+        let eval_path = session_dir.join("datalog_evaluation.txt");
+        assert!(eval_path.exists(), "Evaluation report should exist");
+
+        let eval_content = fs::read_to_string(&eval_path).unwrap();
+        // Facts should be extracted despite facts. prefix selectors
+        assert!(!eval_content.contains("Facts extracted: 0"),
+            "Should extract facts even with facts. prefix selectors: {}", eval_content);
+        assert!(eval_content.contains("satisfied"),
+            "All predicates should pass: {}", eval_content);
+    }
+
+    /// Test: write_envelope with multiple claims and mixed pass/fail results
+    #[tokio::test]
+    #[serial]
+    async fn test_plan_verify_mixed_pass_fail() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut agent = create_test_agent(&temp_dir).await;
+
+        agent.init_session_id_for_test("datalog-mixed-test");
+        let session_id = agent.get_session_id().unwrap().to_string();
+
+        // Write a plan and approve it
+        let write_call = make_tool_call(
+            "plan_write",
+            serde_json::json!({
+                "plan": "plan_id: datalog-test\nrevision: 1\nitems:\n  - id: I1\n    description: Implement feature\n    state: todo\n    touches: [src/lib.rs]\n    checks:\n      happy: {desc: Works, target: lib}\n      negative: [{desc: Errors, target: lib}]\n      boundary: [{desc: Edge, target: lib}]"
+            }),
+        );
+        agent.execute_tool(&write_call).await.unwrap();
+        let approve_call = make_tool_call("plan_approve", serde_json::json!({}));
+        agent.execute_tool(&approve_call).await.unwrap();
+
+        // Create a dummy evidence file
+        let src_dir = temp_dir.path().join("src");
+        fs::create_dir_all(&src_dir).unwrap();
+        fs::write(src_dir.join("lib.rs"), "// test file").unwrap();
+
+        // Write rulespec with one passing and one failing predicate
+        let analysis_dir = temp_dir.path().join("analysis");
+        fs::create_dir_all(&analysis_dir).unwrap();
+        fs::write(
+            analysis_dir.join("rulespec.yaml"),
+            "claims:\n  - name: feature_done\n    selector: feature.done\n  - name: missing_thing\n    selector: nonexistent.field\npredicates:\n  - claim: feature_done\n    rule: exists\n    source: task_prompt\n    notes: This should pass\n  - claim: missing_thing\n    rule: exists\n    source: task_prompt\n    notes: This should fail\n",
+        )
+        .unwrap();
+
+        // Call write_envelope
+        let envelope_call = make_tool_call(
+            "write_envelope",
+            serde_json::json!({
+                "facts": "facts:\n  feature:\n    done: true\n    capabilities: [handle_csv]\n    file: src/lib.rs"
+            }),
+        );
+        let result = agent.execute_tool(&envelope_call).await.unwrap();
+        assert!(result.contains("Envelope written"), "Should confirm envelope written: {}", result);
+        // Should report mixed results
+        assert!(result.contains("failed"), "Should report failures in tool output: {}", result);
+
+        // Check evaluation file
+        let session_dir = temp_dir
+            .path()
+            .join(".g3")
+            .join("sessions")
+            .join(&session_id);
+        let eval_path = session_dir.join("datalog_evaluation.txt");
+        assert!(eval_path.exists(), "Evaluation report should exist");
+
+        let eval_content = fs::read_to_string(&eval_path).unwrap();
+        // Should have extracted some facts (from the feature that exists)
+        assert!(!eval_content.contains("Facts extracted: 0"),
+            "Should extract some facts: {}", eval_content);
+        // Should show 1 pass and 1 fail
+        assert!(eval_content.contains("1/2") || (eval_content.contains("passed") && eval_content.contains("failed")),
+            "Should show mixed results: {}", eval_content);
     }
 }
