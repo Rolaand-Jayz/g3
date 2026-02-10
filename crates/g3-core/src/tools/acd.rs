@@ -181,6 +181,7 @@ mod tests {
         let tool_call = ToolCall {
             tool: "rehydrate".to_string(),
             args: json!({}),
+            id: String::new(),
         };
 
         let result = execute_rehydrate(&tool_call, &mut ctx).await;
@@ -213,6 +214,7 @@ mod tests {
         let tool_call = ToolCall {
             tool: "rehydrate".to_string(),
             args: json!({"fragment_id": "test-fragment"}),
+            id: String::new(),
         };
 
         let result = execute_rehydrate(&tool_call, &mut ctx).await;
@@ -245,6 +247,7 @@ mod tests {
         let tool_call = ToolCall {
             tool: "rehydrate".to_string(),
             args: json!({"fragment_id": "nonexistent-fragment"}),
+            id: String::new(),
         };
 
         let result = execute_rehydrate(&tool_call, &mut ctx).await;

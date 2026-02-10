@@ -95,6 +95,16 @@ impl CacheControl {
     }
 }
 
+/// A tool call stored in an assistant message for proper API roundtripping.
+/// When the model makes a native tool call, we store it structurally so that
+/// convert_messages() can send it as a proper tool_use block (not inline JSON text).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageToolCall {
+    pub id: String,
+    pub name: String,
+    pub input: serde_json::Value,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub role: MessageRole,
@@ -107,6 +117,16 @@ pub struct Message {
     pub kind: MessageKind,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_control: Option<CacheControl>,
+    /// Structured tool calls made by the assistant in this message.
+    /// When non-empty, convert_messages() should emit tool_use content blocks
+    /// instead of (or in addition to) plain text.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<MessageToolCall>,
+    /// If this is a tool result message, the ID of the tool_use it responds to.
+    /// When set, convert_messages() should emit a tool_result content block
+    /// instead of plain text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_result_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -279,6 +299,8 @@ impl Message {
             id: Self::generate_id(),
             kind: MessageKind::Regular,
             cache_control: None,
+            tool_calls: Vec::new(),
+            tool_result_id: None,
         }
     }
 
@@ -295,6 +317,8 @@ impl Message {
             id: Self::generate_id(),
             kind: MessageKind::Regular,
             cache_control: Some(cache_control),
+            tool_calls: Vec::new(),
+            tool_result_id: None,
         }
     }
 
@@ -307,6 +331,8 @@ impl Message {
             id: Self::generate_id(),
             kind,
             cache_control: None,
+            tool_calls: Vec::new(),
+            tool_result_id: None,
         }
     }
 

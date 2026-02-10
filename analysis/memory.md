@@ -1,5 +1,5 @@
 # Workspace Memory
-> Updated: 2026-02-07T05:28:12Z | Size: 26.3k chars
+> Updated: 2026-02-10T21:08:38Z | Size: 27.8k chars
 
 ### Remember Tool Wiring
 - `crates/g3-core/src/tools/memory.rs` [0..5000] - `execute_remember()`, `get_memory_path()`, `merge_memory()`
@@ -430,3 +430,16 @@ Makes tool output responsive to terminal width - no line wrapping, with 4-char r
 - **Fix**: Replaced hand-rolled when evaluation with synthetic `CompiledPredicate` delegation to `evaluate_predicate_datalog()`, which handles all 12 rule types correctly.
 - **Tests**: `test_execute_rules_when_matches_condition_met`, `test_execute_rules_when_matches_condition_met_but_predicate_fails`, `test_execute_rules_when_matches_condition_not_met`
 - **Note**: The `invariants.rs` path was NOT affected — it already delegated to `evaluate_predicate()` which handles all rules.
+
+### Structured Tool Call Messages (2026-02-11)
+- `crates/g3-providers/src/lib.rs` [102..106] - `MessageToolCall` struct (id, name, input)
+- `crates/g3-providers/src/lib.rs` [124..131] - `Message.tool_calls: Vec<MessageToolCall>`, `Message.tool_result_id: Option<String>`
+- `crates/g3-providers/src/anthropic.rs` [284..340] - `convert_messages()` emits `tool_use` blocks for assistant messages with `tool_calls`, `tool_result` blocks for user messages with `tool_result_id`
+- `crates/g3-providers/src/anthropic.rs` [935..941] - `AnthropicContent::ToolResult` variant added
+- `crates/g3-core/src/lib.rs` [82..88] - `ToolCall.id` field added (from native providers)
+- `crates/g3-core/src/lib.rs` [2530..2545] - Tool messages store structured `tool_calls` instead of inline JSON text
+- `crates/g3-core/src/lib.rs` [1385..1400] - `check_duplicate_in_previous_message()` checks structured `tool_calls` field
+- `crates/g3-core/src/context_window.rs` [107..109] - `add_message_with_tokens()` preserves messages with `tool_calls` even if content is empty
+- `crates/g3-core/src/streaming_parser.rs` [339] - `process_chunk()` preserves tool call `id` from provider
+
+**Bug fixed**: Agent would stop mid-task because native tool calls were stored as inline JSON text in `Message.content`. When sent back to Anthropic API via `convert_messages()`, they went as plain text instead of structured `tool_use`/`tool_result` blocks. The model would occasionally get confused and emit text describing what it wanted to do instead of invoking the tool mechanism.

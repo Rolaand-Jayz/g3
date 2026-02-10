@@ -716,8 +716,8 @@ mod tests {
     #[test]
     fn test_deduplicate_tool_calls_no_duplicates() {
         let tools = vec![
-            ToolCall { tool: "shell".to_string(), args: serde_json::json!({"command": "ls"}) },
-            ToolCall { tool: "read_file".to_string(), args: serde_json::json!({"path": "foo.rs"}) },
+            ToolCall { tool: "shell".to_string(), args: serde_json::json!({"command": "ls"}), id: String::new() },
+            ToolCall { tool: "read_file".to_string(), args: serde_json::json!({"path": "foo.rs"}), id: String::new() },
         ];
         
         let result = deduplicate_tool_calls(tools, |_| None);
@@ -730,8 +730,8 @@ mod tests {
     #[test]
     fn test_deduplicate_tool_calls_sequential_duplicate() {
         let tools = vec![
-            ToolCall { tool: "shell".to_string(), args: serde_json::json!({"command": "ls"}) },
-            ToolCall { tool: "shell".to_string(), args: serde_json::json!({"command": "ls"}) },
+            ToolCall { tool: "shell".to_string(), args: serde_json::json!({"command": "ls"}), id: String::new() },
+            ToolCall { tool: "shell".to_string(), args: serde_json::json!({"command": "ls"}), id: String::new() },
         ];
         
         let result = deduplicate_tool_calls(tools, |_| None);
@@ -744,7 +744,7 @@ mod tests {
     #[test]
     fn test_deduplicate_tool_calls_previous_message_duplicate() {
         let tools = vec![
-            ToolCall { tool: "shell".to_string(), args: serde_json::json!({"command": "ls"}) },
+            ToolCall { tool: "shell".to_string(), args: serde_json::json!({"command": "ls"}), id: String::new() },
         ];
         
         // Simulate finding a duplicate in previous message

@@ -103,7 +103,8 @@ impl ContextWindow {
 
     /// Add a message with optional token count from the provider
     pub fn add_message_with_tokens(&mut self, message: Message, tokens: Option<u32>) {
-        if message.content.trim().is_empty() {
+        // Skip truly empty messages, but keep messages that have structured tool calls or tool results
+        if message.content.trim().is_empty() && message.tool_calls.is_empty() && message.tool_result_id.is_none() {
             warn!("Skipping empty message to avoid API error");
             return;
         }

@@ -122,6 +122,7 @@ mod duplicate_detection {
         ToolCall {
             tool: tool.to_string(),
             args,
+            id: String::new(),
         }
     }
 

@@ -29,6 +29,7 @@ fn make_tool_call(tool: &str, args: serde_json::Value) -> ToolCall {
     ToolCall {
         tool: tool.to_string(),
         args,
+        id: String::new(),
     }
 }
 

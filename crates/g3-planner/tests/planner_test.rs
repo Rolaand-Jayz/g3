@@ -9,9 +9,10 @@ fn test_create_tool_message_format() {
 
     assert!(matches!(msg.role, MessageRole::Assistant));
 
-    let parsed: serde_json::Value = serde_json::from_str(&msg.content).unwrap();
-    assert_eq!(parsed["tool"], "shell");
-    assert_eq!(parsed["args"]["command"], "ls -la");
+    assert_eq!(msg.tool_calls.len(), 1);
+    assert_eq!(msg.tool_calls[0].name, "shell");
+    assert_eq!(msg.tool_calls[0].input["command"], "ls -la");
+    assert!(!msg.tool_calls[0].id.is_empty());
 }
 
 #[test]

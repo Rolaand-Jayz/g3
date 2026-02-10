@@ -82,6 +82,10 @@ pub use paths::{
 pub struct ToolCall {
     pub tool: String,
     pub args: serde_json::Value, // Should be a JSON object with tool-specific arguments
+    /// Unique ID for this tool call (from native tool calling providers).
+    /// Used to correlate tool_use/tool_result blocks in the API.
+    #[serde(default)]
+    pub id: String,
 }
 
 /// Cumulative cache statistics for prompt caching efficacy tracking.
@@ -1379,6 +1383,22 @@ impl<W: UiWriter> Agent<W> {
                 continue;
             }
 
+            // Check structured tool_calls first (native tool calling)
+            if !msg.tool_calls.is_empty() {
+                if let Some(last_tc) = msg.tool_calls.last() {
+                    let prev = ToolCall {
+                        tool: last_tc.name.clone(),
+                        args: last_tc.input.clone(),
+                        id: last_tc.id.clone(),
+                    };
+                    if streaming::are_tool_calls_duplicate(&prev, tool_call) {
+                        return Some("DUP IN MSG".to_string());
+                    }
+                }
+                // Only check the most recent assistant message
+                break;
+            }
+
             let content = &msg.content;
 
             // Look for the last occurrence of a tool call pattern
@@ -2001,6 +2021,8 @@ Skip if nothing new. Be brief."#;
                                 content: content.to_string(),
                                 kind: g3_providers::MessageKind::Regular,
                                 cache_control: None,
+                                tool_calls: Vec::new(),
+                                tool_result_id: None,
                             });
                         }
 
@@ -2028,6 +2050,8 @@ Skip if nothing new. Be brief."#;
                 content: format!("[Session Resumed]\n\n{}", context_msg),
                 kind: g3_providers::MessageKind::Regular,
                 cache_control: None,
+                tool_calls: Vec::new(),
+                tool_result_id: None,
             });
         }
 
@@ -2503,25 +2527,29 @@ Skip if nothing new. Be brief."#;
 
                             // Add the tool call and result to the context window using RAW unfiltered content
                             // This ensures the log file contains the true raw content including JSON tool calls
-                            let tool_message = if !raw_content_for_log.trim().is_empty() {
-                                Message::new(
+                            let tool_message = {
+                                let text_content = raw_content_for_log.trim().to_string();
+                                let mut msg = Message::new(
                                     MessageRole::Assistant,
-                                    format!(
-                                        "{}\n\n{{\"tool\": \"{}\", \"args\": {}}}",
-                                        raw_content_for_log.trim(),
-                                        tool_call.tool,
-                                        tool_call.args
-                                    ),
-                                )
-                            } else {
-                                // No text content before tool call, just include the tool call
-                                Message::new(
-                                    MessageRole::Assistant,
-                                    format!(
-                                        "{{\"tool\": \"{}\", \"args\": {}}}",
-                                        tool_call.tool, tool_call.args
-                                    ),
-                                )
+                                    text_content,
+                                );
+                                // Store the tool call structurally so that providers can
+                                // emit proper tool_use blocks (e.g. Anthropic API) instead
+                                // of inline JSON text that confuses the model.
+                                msg.tool_calls.push(g3_providers::MessageToolCall {
+                                    id: if tool_call.id.is_empty() {
+                                        // Safety net: generate an ID if none was provided.
+                                        // Anthropic API requires tool_use IDs matching ^[a-zA-Z0-9_-]+$
+                                        use std::sync::atomic::{AtomicU64, Ordering};
+                                        static FALLBACK_COUNTER: AtomicU64 = AtomicU64::new(0);
+                                        format!("tool_{}", FALLBACK_COUNTER.fetch_add(1, Ordering::SeqCst))
+                                    } else {
+                                        tool_call.id.clone()
+                                    },
+                                    name: tool_call.tool.clone(),
+                                    input: tool_call.args.clone(),
+                                });
+                                msg
                             };
                             let mut result_message = {
                                 let content = format!("Tool result: {}", tool_result);
@@ -2547,6 +2575,10 @@ Skip if nothing new. Be brief."#;
                                     Message::new(MessageRole::User, content)
                                 }
                             };
+
+                            // Link the tool result to the tool_use ID so providers can
+                            // emit proper tool_result blocks (e.g. Anthropic API).
+                            result_message.tool_result_id = Some(tool_call.id.clone());
 
                             // Attach any pending images to the result message
                             // (images loaded via read_image tool)

@@ -328,6 +328,7 @@ mod duplicate_detection_characterization {
         ToolCall {
             tool: tool.to_string(),
             args: serde_json::from_str(args).unwrap(),
+            id: String::new(),
         }
     }
 
@@ -525,6 +526,7 @@ mod tool_execution_integration {
         // Execute a tool directly
         let tool_call = ToolCall {
             tool: "read_file".to_string(),
+            id: String::new(),
             args: serde_json::json!({ "file_path": test_file.to_string_lossy() }),
         };
 
@@ -547,6 +549,7 @@ mod tool_execution_integration {
 
         let tool_call = ToolCall {
             tool: "shell".to_string(),
+            id: String::new(),
             args: serde_json::json!({ "command": "echo 'test output'" }),
         };
 
@@ -570,6 +573,7 @@ mod tool_execution_integration {
 
         let tool_call = ToolCall {
             tool: "write_file".to_string(),
+            id: String::new(),
             args: serde_json::json!({
                 "file_path": new_file.to_string_lossy(),
                 "content": "New content"
@@ -602,6 +606,7 @@ mod tool_execution_integration {
         // Write Plan
         let write_call = ToolCall {
             tool: "plan_write".to_string(),
+            id: String::new(),
             args: serde_json::json!({
                 "plan": r#"plan_id: test-plan
 revision: 1
@@ -634,6 +639,7 @@ items:
         // Read Plan
         let read_call = ToolCall {
             tool: "plan_read".to_string(),
+            id: String::new(),
             args: serde_json::json!({}),
         };
         let read_result = agent.execute_tool(&read_call).await.unwrap();

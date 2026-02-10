@@ -295,14 +295,26 @@ impl AnthropicProvider {
                         });
                     }
 
-                    // Add text content
-                    content_blocks.push(AnthropicContent::Text {
-                        text: message.content.clone(),
-                        cache_control: message
-                            .cache_control
-                            .as_ref()
-                            .map(Self::convert_cache_control),
-                    });
+                    // Check if this is a tool result message
+                    if let Some(ref tool_use_id) = message.tool_result_id {
+                        content_blocks.push(AnthropicContent::ToolResult {
+                            tool_use_id: tool_use_id.clone(),
+                            content: message.content.clone(),
+                            cache_control: message
+                                .cache_control
+                                .as_ref()
+                                .map(Self::convert_cache_control),
+                        });
+                    } else {
+                        // Regular text content
+                        content_blocks.push(AnthropicContent::Text {
+                            text: message.content.clone(),
+                            cache_control: message
+                                .cache_control
+                                .as_ref()
+                                .map(Self::convert_cache_control),
+                        });
+                    }
 
                     anthropic_messages.push(AnthropicMessage {
                         role: "user".to_string(),
@@ -310,15 +322,39 @@ impl AnthropicProvider {
                     });
                 }
                 MessageRole::Assistant => {
-                    anthropic_messages.push(AnthropicMessage {
-                        role: "assistant".to_string(),
-                        content: vec![AnthropicContent::Text {
+                    let mut content_blocks: Vec<AnthropicContent> = Vec::new();
+
+                    // Add text content if non-empty
+                    if !message.content.trim().is_empty() {
+                        content_blocks.push(AnthropicContent::Text {
                             text: message.content.clone(),
                             cache_control: message
                                 .cache_control
                                 .as_ref()
                                 .map(Self::convert_cache_control),
-                        }],
+                        });
+                    }
+
+                    // Add tool_use blocks for any structured tool calls
+                    for tc in &message.tool_calls {
+                        content_blocks.push(AnthropicContent::ToolUse {
+                            id: tc.id.clone(),
+                            name: tc.name.clone(),
+                            input: tc.input.clone(),
+                        });
+                    }
+
+                    // Ensure we have at least one content block
+                    if content_blocks.is_empty() {
+                        content_blocks.push(AnthropicContent::Text {
+                            text: message.content.clone(),
+                            cache_control: None,
+                        });
+                    }
+
+                    anthropic_messages.push(AnthropicMessage {
+                        role: "assistant".to_string(),
+                        content: content_blocks,
                     });
                 }
             }
@@ -929,6 +965,13 @@ enum AnthropicContent {
     },
     #[serde(rename = "image")]
     Image { source: AnthropicImageSource },
+    #[serde(rename = "tool_result")]
+    ToolResult {
+        tool_use_id: String,
+        content: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<crate::CacheControl>,
+    },
 }
 
 /// Image source for Anthropic API

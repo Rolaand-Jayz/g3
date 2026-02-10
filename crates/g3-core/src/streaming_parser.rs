@@ -336,6 +336,7 @@ impl StreamingToolParser {
                 completed_tools.push(ToolCall {
                     tool: tool_call.tool.clone(),
                     args: tool_call.args.clone(),
+                    id: tool_call.id.clone(),
                 });
             }
         }
@@ -466,11 +467,19 @@ impl StreamingToolParser {
     }
 
     fn try_parse_tool_call_json(&self, json_str: &str) -> Option<ToolCall> {
-        let tool_call: ToolCall = serde_json::from_str(json_str).ok()?;
+        let mut tool_call: ToolCall = serde_json::from_str(json_str).ok()?;
         let args_obj = tool_call.args.as_object()?;
 
         if args_contain_prose_fragments(args_obj) {
             return None;
+        }
+
+        // Generate an ID if not provided (JSON fallback tool calls don't have IDs,
+        // but the Anthropic API requires tool_use IDs matching ^[a-zA-Z0-9_-]+$)
+        if tool_call.id.is_empty() {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            tool_call.id = format!("json_tool_{}", COUNTER.fetch_add(1, Ordering::SeqCst));
         }
 
         Some(tool_call)

@@ -126,14 +126,16 @@ pub async fn get_initial_discovery_messages(
 
 /// Creates an Assistant message with a tool call in g3's JSON format.
 pub fn create_tool_message(tool: &str, command: &str) -> Message {
-    let tool_call = serde_json::json!({
-        "tool": tool,
-        "args": {
-            "command": command
-        }
+    let mut msg = Message::new(
+        MessageRole::Assistant,
+        String::new(),
+    );
+    msg.tool_calls.push(g3_providers::MessageToolCall {
+        id: format!("plan_{}", msg.id),
+        name: tool.to_string(),
+        input: serde_json::json!({ "command": command }),
     });
-
-    Message::new(MessageRole::Assistant, tool_call.to_string())
+    msg
 }
 
 /// Extract shell commands from the LLM response.
@@ -269,10 +271,10 @@ mod tests {
         let msg = create_tool_message("shell", "ls -la");
 
         assert!(matches!(msg.role, MessageRole::Assistant));
-
-        let parsed: serde_json::Value = serde_json::from_str(&msg.content).unwrap();
-        assert_eq!(parsed["tool"], "shell");
-        assert_eq!(parsed["args"]["command"], "ls -la");
+        assert_eq!(msg.tool_calls.len(), 1);
+        assert_eq!(msg.tool_calls[0].name, "shell");
+        assert_eq!(msg.tool_calls[0].input["command"], "ls -la");
+        assert!(!msg.tool_calls[0].id.is_empty());
     }
 
     #[test]
