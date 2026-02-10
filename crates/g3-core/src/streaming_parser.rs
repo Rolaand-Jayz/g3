@@ -481,6 +481,20 @@ impl StreamingToolParser {
         &self.text_buffer
     }
 
+    /// Get only the text content before the first JSON tool call.
+    /// Returns the full buffer if no tool calls are found.
+    /// This is used to save the "preamble" text (e.g. "Let me run that.")
+    /// without including raw duplicate tool call JSON in the assistant message.
+    pub fn get_text_before_tool_calls(&self) -> &str {
+        let fence_ranges = find_code_fence_ranges(&self.text_buffer);
+        if let Some(pos) = find_first_tool_call_start(&self.text_buffer) {
+            if !is_position_in_fence_ranges(pos, &fence_ranges) {
+                return self.text_buffer[..pos].trim_end();
+            }
+        }
+        &self.text_buffer
+    }
+
     pub fn get_content_before_position(&self, pos: usize) -> String {
         if pos <= self.text_buffer.len() {
             self.text_buffer[..pos].to_string()

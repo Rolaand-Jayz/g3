@@ -951,3 +951,234 @@ async fn test_plan_approval_gate_blocks_unapproved_changes() {
     
     assert!(has_blocking_message, "Should have blocking message in context");
 }
+
+/// Test: JSON fallback stuttered duplicate tool calls - first executes, second deduped
+///
+/// Reproduces the exact failure from session create_a_plan_generate_a_4ef735ceedecfdd:
+/// The LLM emits two identical JSON tool calls as text content (non-native).
+/// The first should be executed, the second should be deduplicated.
+/// After execution, the follow-up response should work normally.
+#[tokio::test]
+async fn test_json_fallback_stuttered_duplicate_tool_calls() {
+    // Provider WITHOUT native tool calling - uses JSON fallback
+    // Response 1: Two identical JSON tool calls in text (the stutter)
+    // Response 2: Follow-up text after tool execution
+    let provider = MockProvider::new()
+        .with_native_tool_calling(false)
+        .with_response(MockResponse::text_with_duplicate_json_tools(
+            "shell",
+            serde_json::json!({"command": "echo stutter_test"}),
+        ))
+        .with_default_response(MockResponse::text("The command completed successfully."));
+
+    let (mut agent, _temp_dir) = create_agent_with_mock(provider).await;
+
+    let result = agent.execute_task("Run a command", None, false).await;
+    assert!(result.is_ok(), "Task should succeed: {:?}", result.err());
+
+    let history = &agent.get_context_window().conversation_history;
+
+    // Should have exactly one tool result (not two)
+    let tool_result_count = history
+        .iter()
+        .filter(|m| matches!(m.role, MessageRole::User) && m.content.contains("Tool result:") && m.content.contains("stutter_test"))
+        .count();
+    assert_eq!(tool_result_count, 1, "Should have exactly 1 tool result, got {}", tool_result_count);
+
+    // Should have the follow-up response
+    let has_followup = history
+        .iter()
+        .any(|m| matches!(m.role, MessageRole::Assistant) && m.content.contains("completed successfully"));
+    assert!(has_followup, "Follow-up response should be in context");
+
+    // CRITICAL: Verify the assistant message does NOT contain raw duplicate JSON tool calls
+    // This is the actual bug - the model's stuttered response gets stored as raw JSON content
+    // which confuses the model on subsequent turns.
+    for (i, msg) in history.iter().enumerate() {
+        if matches!(msg.role, MessageRole::Assistant) {
+            // Count how many times the tool call JSON pattern appears in this message
+            let tool_pattern = r#""tool": "shell""#;
+            let count = msg.content.matches(tool_pattern).count();
+            assert!(
+                count <= 1,
+                "Assistant message [{}] contains {} duplicate tool call JSON patterns (should be 0 or 1): {}",
+                i, count, &msg.content[..msg.content.len().min(200)]
+            );
+        }
+    }
+}
+
+/// Test: JSON fallback stuttered duplicate with text prefix
+///
+/// Same as above but with text before the tool calls:
+/// "Let me run that.\n\n{tool...}\n\n{tool...}"
+#[tokio::test]
+async fn test_json_fallback_stuttered_duplicate_with_text_prefix() {
+    let provider = MockProvider::new()
+        .with_native_tool_calling(false)
+        .with_response(MockResponse::text_with_duplicate_json_tools_prefixed(
+            "Let me run that command.",
+            "shell",
+            serde_json::json!({"command": "echo prefixed_stutter"}),
+        ))
+        .with_default_response(MockResponse::text("Done."));
+
+    let (mut agent, _temp_dir) = create_agent_with_mock(provider).await;
+
+    let result = agent.execute_task("Run a command", None, false).await;
+    assert!(result.is_ok(), "Task should succeed: {:?}", result.err());
+
+    let history = &agent.get_context_window().conversation_history;
+
+    // Should have exactly one tool result
+    let tool_result_count = history
+        .iter()
+        .filter(|m| matches!(m.role, MessageRole::User) && m.content.contains("Tool result:") && m.content.contains("prefixed_stutter"))
+        .count();
+    assert_eq!(tool_result_count, 1, "Should have exactly 1 tool result, got {}", tool_result_count);
+}
+
+/// Test: Two different JSON tool calls in one response should BOTH execute
+///
+/// When the LLM emits two different tool calls (not duplicates), both should execute.
+/// This is the boundary case - different args means not a duplicate.
+#[tokio::test]
+async fn test_json_fallback_two_different_tool_calls_both_execute() {
+    // Manually construct two different tool calls as text chunks
+    let tool1 = r#"{"tool": "shell", "args": {"command": "echo first_call"}}"#;
+    let tool2 = r#"{"tool": "shell", "args": {"command": "echo second_call"}}"#;
+
+    let provider = MockProvider::new()
+        .with_native_tool_calling(false)
+        .with_response(MockResponse::custom(
+            vec![
+                MockChunk::content(tool1),
+                MockChunk::content("\n\n"),
+                MockChunk::content(tool2),
+                MockChunk::finished("end_turn"),
+            ],
+            g3_providers::Usage {
+                prompt_tokens: 100,
+                completion_tokens: 50,
+                total_tokens: 150,
+                cache_creation_tokens: 0,
+                cache_read_tokens: 0,
+            },
+        ))
+        .with_default_response(MockResponse::text("Both commands ran."));
+
+    let (mut agent, _temp_dir) = create_agent_with_mock(provider).await;
+
+    let result = agent.execute_task("Run two commands", None, false).await;
+    assert!(result.is_ok(), "Task should succeed: {:?}", result.err());
+
+    let history = &agent.get_context_window().conversation_history;
+
+    // Should have tool results for both calls
+    let first_result = history
+        .iter()
+        .any(|m| matches!(m.role, MessageRole::User) && m.content.contains("Tool result:") && m.content.contains("first_call"));
+    let second_result = history
+        .iter()
+        .any(|m| matches!(m.role, MessageRole::User) && m.content.contains("Tool result:") && m.content.contains("second_call"));
+
+    assert!(first_result, "First tool call should have been executed");
+    assert!(second_result, "Second (different) tool call should also have been executed");
+}
+
+/// Test: Cross-turn same tool call should still execute (not be deduped as DUP IN MSG)
+///
+/// Scenario: Turn 1 - model emits tool call A (executed, result returned).
+/// Turn 2 (new user message) - model emits tool call A again (stuttered x2).
+/// The first should execute (it's a new turn with a new user message between),
+/// the second should be deduped as DUP IN CHUNK.
+#[tokio::test]
+async fn test_cross_turn_same_tool_call_executes() {
+    let provider = MockProvider::new()
+        .with_native_tool_calling(false)
+        .with_response(MockResponse::text_with_json_tool(
+            "Running the command.",
+            "shell",
+            serde_json::json!({"command": "echo cross_turn_test"}),
+        ))
+        .with_response(MockResponse::text("First run complete."))
+        // Second task will get the stuttered duplicate
+        .with_response(MockResponse::text_with_duplicate_json_tools(
+            "shell",
+            serde_json::json!({"command": "echo cross_turn_test"}),
+        ))
+        .with_default_response(MockResponse::text("Second run complete."));
+
+    let (mut agent, _temp_dir) = create_agent_with_mock(provider).await;
+
+    // First task
+    let result1 = agent.execute_task("Run the command", None, false).await;
+    assert!(result1.is_ok(), "First task should succeed: {:?}", result1.err());
+
+    // Second task - same tool call but new user message
+    let result2 = agent.execute_task("Run it again", None, false).await;
+    assert!(result2.is_ok(), "Second task should succeed: {:?}", result2.err());
+
+    let history = &agent.get_context_window().conversation_history;
+
+    // Should have two tool results (one per task)
+    let tool_result_count = history
+        .iter()
+        .filter(|m| matches!(m.role, MessageRole::User) && m.content.contains("Tool result:") && m.content.contains("cross_turn_test"))
+        .count();
+    assert_eq!(tool_result_count, 2, "Should have 2 tool results (one per turn), got {}", tool_result_count);
+}
+
+/// Test: Three identical tool calls in one response - first executes, rest deduped
+///
+/// Boundary case: model stutters three times.
+#[tokio::test]
+async fn test_triple_stuttered_tool_calls() {
+    let tool_str = r#"{"tool": "shell", "args": {"command": "echo triple"}}"#;
+    let provider = MockProvider::new()
+        .with_native_tool_calling(false)
+        .with_response(MockResponse::custom(
+            vec![
+                MockChunk::content(tool_str),
+                MockChunk::content("\n\n"),
+                MockChunk::content(tool_str),
+                MockChunk::content("\n\n"),
+                MockChunk::content(tool_str),
+                MockChunk::finished("end_turn"),
+            ],
+            g3_providers::Usage {
+                prompt_tokens: 100,
+                completion_tokens: 50,
+                total_tokens: 150,
+                cache_creation_tokens: 0,
+                cache_read_tokens: 0,
+            },
+        ))
+        .with_default_response(MockResponse::text("Done."));
+
+    let (mut agent, _temp_dir) = create_agent_with_mock(provider).await;
+
+    let result = agent.execute_task("Run command", None, false).await;
+    assert!(result.is_ok(), "Task should succeed: {:?}", result.err());
+
+    let history = &agent.get_context_window().conversation_history;
+
+    // Should have exactly one tool result
+    let tool_result_count = history
+        .iter()
+        .filter(|m| matches!(m.role, MessageRole::User) && m.content.contains("Tool result:") && m.content.contains("triple"))
+        .count();
+    assert_eq!(tool_result_count, 1, "Should have exactly 1 tool result, got {}", tool_result_count);
+
+    // Verify no assistant message has more than 1 tool call JSON pattern
+    for (i, msg) in history.iter().enumerate() {
+        if matches!(msg.role, MessageRole::Assistant) {
+            let count = msg.content.matches(r#""tool": "shell""#).count();
+            assert!(
+                count <= 1,
+                "Assistant message [{}] contains {} tool call patterns (should be 0 or 1)",
+                i, count
+            );
+        }
+    }
+}

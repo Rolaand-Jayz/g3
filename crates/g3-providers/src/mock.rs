@@ -231,7 +231,59 @@ impl MockResponse {
         }
     }
 
-    /// Create a response that gets cut off by max_tokens
+    /// Create a response with duplicate JSON tool calls in text content (non-native).
+    /// Mimics the LLM stuttering pattern where it emits the same tool call twice.
+    pub fn text_with_duplicate_json_tools(tool: &str, args: serde_json::Value) -> Self {
+        let args_str = serde_json::to_string(&args).unwrap();
+        let tool_str = format!(r#"{{"tool": "{}", "args": {}}}"#, tool, args_str);
+        let full_content = format!("{}\n\n{}", &tool_str, &tool_str);
+
+        Self {
+            chunks: vec![
+                MockChunk::content(&tool_str),
+                MockChunk::content("\n\n"),
+                MockChunk::content(&tool_str),
+                MockChunk::finished("end_turn"),
+            ],
+            usage: Usage {
+                prompt_tokens: 100,
+                completion_tokens: full_content.len() as u32 / 4,
+                total_tokens: 100 + full_content.len() as u32 / 4,
+                cache_creation_tokens: 0,
+                cache_read_tokens: 0,
+            },
+        }
+    }
+
+    /// Create a response with text followed by duplicate JSON tool calls (non-native).
+    /// Mimics the pattern: "Let me run that.\n\n{tool...}\n\n{tool...}"
+    pub fn text_with_duplicate_json_tools_prefixed(
+        text: &str,
+        tool: &str,
+        args: serde_json::Value,
+    ) -> Self {
+        let args_str = serde_json::to_string(&args).unwrap();
+        let tool_str = format!(r#"{{"tool": "{}", "args": {}}}"#, tool, args_str);
+        let full_content = format!("{}\n\n{}\n\n{}", text, &tool_str, &tool_str);
+
+        Self {
+            chunks: vec![
+                MockChunk::content(text),
+                MockChunk::content("\n\n"),
+                MockChunk::content(&tool_str),
+                MockChunk::content("\n\n"),
+                MockChunk::content(&tool_str),
+                MockChunk::finished("end_turn"),
+            ],
+            usage: Usage {
+                prompt_tokens: 100,
+                completion_tokens: full_content.len() as u32 / 4,
+                total_tokens: 100 + full_content.len() as u32 / 4,
+                cache_creation_tokens: 0,
+                cache_read_tokens: 0,
+            },
+        }
+    }
     pub fn truncated(content: &str) -> Self {
         Self {
             chunks: vec![

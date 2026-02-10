@@ -2368,7 +2368,10 @@ Skip if nothing new. Be brief."#;
                             let already_displayed_chars = iter.current_response.chars().count();
                             let text_content = iter.parser.get_text_content();
                             let clean_content = streaming::clean_llm_tokens(&text_content);
-                            let raw_content_for_log = clean_content.clone();
+                            // Use only the text before tool calls for the log message.
+                            // This prevents duplicate tool call JSON from being stored
+                            // in the assistant message when the LLM stutters.
+                            let raw_content_for_log = streaming::clean_llm_tokens(iter.parser.get_text_before_tool_calls());
                             let filtered_content =
                                 self.ui_writer.filter_json_tool_calls(&clean_content);
                             let final_display_content = filtered_content.trim();
