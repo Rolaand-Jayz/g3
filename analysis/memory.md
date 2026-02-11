@@ -1,5 +1,5 @@
 # Workspace Memory
-> Updated: 2026-02-10T21:08:38Z | Size: 27.8k chars
+> Updated: 2026-02-11T03:39:03Z | Size: 29.0k chars
 
 ### Remember Tool Wiring
 - `crates/g3-core/src/tools/memory.rs` [0..5000] - `execute_remember()`, `get_memory_path()`, `merge_memory()`
@@ -443,3 +443,13 @@ Makes tool output responsive to terminal width - no line wrapping, with 4-char r
 - `crates/g3-core/src/streaming_parser.rs` [339] - `process_chunk()` preserves tool call `id` from provider
 
 **Bug fixed**: Agent would stop mid-task because native tool calls were stored as inline JSON text in `Message.content`. When sent back to Anthropic API via `convert_messages()`, they went as plain text instead of structured `tool_use`/`tool_result` blocks. The model would occasionally get confused and emit text describing what it wanted to do instead of invoking the tool mechanism.
+
+### Compaction Tool Call Stripping Fix (2026-02-11)
+- `crates/g3-core/src/context_window.rs` [339..355] - `extract_preserved_messages()` now strips `tool_calls` from preserved last assistant message
+  - **Root cause**: After compaction, preserved assistant message retained structured `tool_calls` but the corresponding `tool_result` was summarized away → orphaned `tool_use` blocks → Anthropic 400 error
+  - **Fix**: Clear `msg.tool_calls` in `extract_preserved_messages()` before returning
+  - Messages with only tool_calls and empty content are dropped by `add_message_with_tokens()` empty check
+- `crates/g3-providers/src/anthropic.rs` [369..435] - `strip_orphaned_tool_use()` defense-in-depth
+  - Post-processing pass in `convert_messages()` detects orphaned `tool_use` blocks (no matching `tool_result` in next message)
+  - Strips orphaned blocks with warning, adds placeholder text if message becomes empty
+- Tests: `test_compaction_strips_tool_calls_from_last_assistant`, `test_compaction_drops_assistant_with_only_tool_calls_no_text`, `test_compaction_preserves_normal_assistant_message` (unit), `test_strip_orphaned_tool_use_*` (anthropic), `test_compaction_strips_structured_tool_calls` (integration)

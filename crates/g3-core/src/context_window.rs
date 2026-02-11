@@ -334,13 +334,24 @@ Format this as a detailed but concise summary that can be used to resume the con
             }
         });
 
-        // Find the last assistant message in the conversation
+        // Find the last assistant message in the conversation.
+        // IMPORTANT: Strip tool_calls from the preserved message. After compaction,
+        // the tool_result messages are summarized away, so keeping tool_calls would
+        // create orphaned tool_use blocks that violate the Anthropic API constraint:
+        // "Each tool_use block must have a corresponding tool_result block in the next message."
         let last_assistant_message = self
             .conversation_history
             .iter()
             .rev()
             .find(|m| matches!(m.role, MessageRole::Assistant))
-            .cloned();
+            .map(|m| {
+                let mut msg = m.clone();
+                if !msg.tool_calls.is_empty() {
+                    debug!("Stripping {} tool_calls from preserved assistant message during compaction", msg.tool_calls.len());
+                    msg.tool_calls.clear();
+                }
+                msg
+            });
 
         PreservedMessages {
             system_prompt,
@@ -767,6 +778,7 @@ impl ThinResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use g3_providers::MessageToolCall;
 
     #[test]
     fn test_new_context_window() {
@@ -857,5 +869,137 @@ mod tests {
         assert_eq!(ThinScope::All.file_prefix(), "skinny");
         assert_eq!(ThinScope::FirstThird.error_action(), "thinning");
         assert_eq!(ThinScope::All.error_action(), "skinnifying");
+    }
+
+    // ====================================================================
+    // Compaction: tool_call stripping tests
+    // ====================================================================
+
+    /// Helper to create a Message with tool_calls
+    fn assistant_msg_with_tool_calls(content: &str, tool_call_ids: &[&str]) -> Message {
+        let mut msg = Message::new(MessageRole::Assistant, content.to_string());
+        msg.tool_calls = tool_call_ids
+            .iter()
+            .map(|id| MessageToolCall {
+                id: id.to_string(),
+                name: "read_file".to_string(),
+                input: serde_json::json!({"file_path": "/tmp/test.rs"}),
+            })
+            .collect();
+        msg
+    }
+
+    #[test]
+    fn test_compaction_strips_tool_calls_from_last_assistant() {
+        // Reproduce the exact bug: assistant message with tool_calls gets preserved
+        // across compaction, creating orphaned tool_use blocks.
+        let mut cw = ContextWindow::new(100_000);
+
+        // Build a conversation: system, user, assistant(with tool_call), user(tool_result), user(new input)
+        cw.add_message(Message::new(MessageRole::System, "You are a helpful assistant.".to_string()));
+        cw.add_message(Message::new(MessageRole::User, "Read the file please.".to_string()));
+        cw.add_message(assistant_msg_with_tool_calls(
+            "Let me read that file for you.",
+            &["toolu_01QRFL8vGKDjZZkfHR586Srb"],
+        ));
+        let mut tool_result = Message::new(MessageRole::User, "Tool result: file contents here...".to_string());
+        tool_result.tool_result_id = Some("toolu_01QRFL8vGKDjZZkfHR586Srb".to_string());
+        cw.add_message(tool_result);
+
+        // Now compact
+        cw.reset_with_summary(
+            "Summary: user asked to read a file, assistant read it.".to_string(),
+            Some("Now do something else.".to_string()),
+        );
+
+        // Find the preserved assistant message
+        let assistant_msgs: Vec<&Message> = cw
+            .conversation_history
+            .iter()
+            .filter(|m| matches!(m.role, MessageRole::Assistant))
+            .collect();
+
+        assert_eq!(assistant_msgs.len(), 1, "Should have exactly one assistant message");
+        let preserved = assistant_msgs[0];
+
+        // The key assertion: tool_calls must be stripped
+        assert!(
+            preserved.tool_calls.is_empty(),
+            "tool_calls should be stripped from preserved assistant message, but found: {:?}",
+            preserved.tool_calls
+        );
+
+        // Text content should be preserved
+        assert!(preserved.content.contains("Let me read that file"));
+    }
+
+    #[test]
+    fn test_compaction_drops_assistant_with_only_tool_calls_no_text() {
+        // Edge case: assistant message has tool_calls but empty content.
+        // After stripping tool_calls, the message is empty and should be dropped.
+        let mut cw = ContextWindow::new(100_000);
+
+        cw.add_message(Message::new(MessageRole::System, "You are a helpful assistant.".to_string()));
+        cw.add_message(Message::new(MessageRole::User, "Do something.".to_string()));
+
+        // Assistant message with tool_calls but empty text content
+        let mut assistant = Message::new(MessageRole::Assistant, "".to_string());
+        assistant.tool_calls = vec![MessageToolCall {
+            id: "toolu_abc123".to_string(),
+            name: "shell".to_string(),
+            input: serde_json::json!({"command": "ls"}),
+        }];
+        // Force-add it (bypassing the empty check since it has tool_calls)
+        cw.conversation_history.push(assistant);
+
+        let mut tool_result = Message::new(MessageRole::User, "Tool result: file1 file2".to_string());
+        tool_result.tool_result_id = Some("toolu_abc123".to_string());
+        cw.add_message(tool_result);
+
+        // Compact
+        cw.reset_with_summary(
+            "Summary: ran ls command.".to_string(),
+            Some("What next?".to_string()),
+        );
+
+        // The empty assistant message (after tool_call stripping) should be dropped
+        let assistant_msgs: Vec<&Message> = cw
+            .conversation_history
+            .iter()
+            .filter(|m| matches!(m.role, MessageRole::Assistant))
+            .collect();
+
+        assert_eq!(
+            assistant_msgs.len(), 0,
+            "Empty assistant message (after tool_call stripping) should be dropped"
+        );
+    }
+
+    #[test]
+    fn test_compaction_preserves_normal_assistant_message() {
+        // Normal case: assistant message without tool_calls should be preserved as-is.
+        let mut cw = ContextWindow::new(100_000);
+
+        cw.add_message(Message::new(MessageRole::System, "You are a helpful assistant.".to_string()));
+        cw.add_message(Message::new(MessageRole::User, "Hello!".to_string()));
+        cw.add_message(Message::new(
+            MessageRole::Assistant,
+            "Hello! How can I help you today?".to_string(),
+        ));
+
+        cw.reset_with_summary(
+            "Summary: greeting exchange.".to_string(),
+            Some("Tell me a joke.".to_string()),
+        );
+
+        let assistant_msgs: Vec<&Message> = cw
+            .conversation_history
+            .iter()
+            .filter(|m| matches!(m.role, MessageRole::Assistant))
+            .collect();
+
+        assert_eq!(assistant_msgs.len(), 1);
+        assert!(assistant_msgs[0].tool_calls.is_empty());
+        assert!(assistant_msgs[0].content.contains("Hello! How can I help you today?"));
     }
 }

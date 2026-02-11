@@ -360,7 +360,78 @@ impl AnthropicProvider {
             }
         }
 
+        // Defense-in-depth: strip orphaned tool_use blocks that have no matching tool_result
+        Self::strip_orphaned_tool_use(&mut anthropic_messages);
+
         Ok((system_message, anthropic_messages))
+    }
+
+    /// Strip orphaned tool_use blocks from assistant messages that have no matching
+    /// tool_result in the immediately following user message.
+    ///
+    /// Anthropic API requires: "Each tool_use block must have a corresponding tool_result
+    /// block in the next message." This can happen after context compaction when the
+    /// last assistant message had tool_calls but the tool_result was summarized away.
+    fn strip_orphaned_tool_use(messages: &mut Vec<AnthropicMessage>) {
+        // Collect tool_result IDs from each user message, indexed by position
+        let tool_result_ids_by_pos: Vec<Option<Vec<String>>> = messages
+            .iter()
+            .map(|msg| {
+                if msg.role == "user" {
+                    let ids: Vec<String> = msg
+                        .content
+                        .iter()
+                        .filter_map(|c| match c {
+                            AnthropicContent::ToolResult { tool_use_id, .. } => {
+                                Some(tool_use_id.clone())
+                            }
+                            _ => None,
+                        })
+                        .collect();
+                    if ids.is_empty() { None } else { Some(ids) }
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for i in 0..messages.len() {
+            if messages[i].role != "assistant" {
+                continue;
+            }
+            let has_tool_use = messages[i].content.iter().any(|c| matches!(c, AnthropicContent::ToolUse { .. }));
+            if !has_tool_use {
+                continue;
+            }
+
+            // Check if next message is a user message with tool_result blocks
+            let next_has_results = i + 1 < messages.len()
+                && tool_result_ids_by_pos.get(i + 1).and_then(|v| v.as_ref()).is_some();
+
+            if !next_has_results {
+                let tool_use_ids: Vec<String> = messages[i]
+                    .content
+                    .iter()
+                    .filter_map(|c| match c {
+                        AnthropicContent::ToolUse { id, .. } => Some(id.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                tracing::warn!(
+                    "Stripping {} orphaned tool_use block(s) from assistant message {}: {:?}",
+                    tool_use_ids.len(), i, tool_use_ids
+                );
+                messages[i].content.retain(|c| !matches!(c, AnthropicContent::ToolUse { .. }));
+
+                // If stripping left the message empty, add placeholder text
+                if messages[i].content.is_empty() {
+                    messages[i].content.push(AnthropicContent::Text {
+                        text: "(continued)".to_string(),
+                        cache_control: None,
+                    });
+                }
+            }
+        }
     }
 
     fn create_request_body(
@@ -1309,5 +1380,147 @@ mod tests {
 
         assert_eq!(text_content.len(), 1);
         assert_eq!(text_content[0], "Here is my response.");
+    }
+
+    // ====================================================================
+    // Orphaned tool_use stripping tests
+    // ====================================================================
+
+    #[test]
+    fn test_strip_orphaned_tool_use_removes_orphaned_blocks() {
+        // Simulate: assistant with tool_use, followed by regular user message (no tool_result)
+        let mut messages = vec![
+            AnthropicMessage {
+                role: "user".to_string(),
+                content: vec![AnthropicContent::Text {
+                    text: "Read the file".to_string(),
+                    cache_control: None,
+                }],
+            },
+            AnthropicMessage {
+                role: "assistant".to_string(),
+                content: vec![
+                    AnthropicContent::Text {
+                        text: "Let me read that.".to_string(),
+                        cache_control: None,
+                    },
+                    AnthropicContent::ToolUse {
+                        id: "toolu_orphaned".to_string(),
+                        name: "read_file".to_string(),
+                        input: serde_json::json!({"file_path": "test.rs"}),
+                    },
+                ],
+            },
+            // Next message is a regular user message, NOT a tool_result
+            AnthropicMessage {
+                role: "user".to_string(),
+                content: vec![AnthropicContent::Text {
+                    text: "Do something else".to_string(),
+                    cache_control: None,
+                }],
+            },
+        ];
+
+        AnthropicProvider::strip_orphaned_tool_use(&mut messages);
+
+        // The tool_use should be stripped from the assistant message
+        let assistant = &messages[1];
+        assert!(
+            !assistant.content.iter().any(|c| matches!(c, AnthropicContent::ToolUse { .. })),
+            "Orphaned tool_use should be stripped"
+        );
+        // Text content should remain
+        assert!(
+            assistant.content.iter().any(|c| matches!(c, AnthropicContent::Text { .. })),
+            "Text content should be preserved"
+        );
+    }
+
+    #[test]
+    fn test_strip_orphaned_tool_use_preserves_valid_sequence() {
+        // Valid: assistant with tool_use, followed by user with matching tool_result
+        let mut messages = vec![
+            AnthropicMessage {
+                role: "user".to_string(),
+                content: vec![AnthropicContent::Text {
+                    text: "Read the file".to_string(),
+                    cache_control: None,
+                }],
+            },
+            AnthropicMessage {
+                role: "assistant".to_string(),
+                content: vec![
+                    AnthropicContent::Text {
+                        text: "Reading...".to_string(),
+                        cache_control: None,
+                    },
+                    AnthropicContent::ToolUse {
+                        id: "toolu_valid".to_string(),
+                        name: "read_file".to_string(),
+                        input: serde_json::json!({"file_path": "test.rs"}),
+                    },
+                ],
+            },
+            AnthropicMessage {
+                role: "user".to_string(),
+                content: vec![AnthropicContent::ToolResult {
+                    tool_use_id: "toolu_valid".to_string(),
+                    content: "file contents".to_string(),
+                    cache_control: None,
+                }],
+            },
+        ];
+
+        AnthropicProvider::strip_orphaned_tool_use(&mut messages);
+
+        // tool_use should NOT be stripped
+        let assistant = &messages[1];
+        assert!(
+            assistant.content.iter().any(|c| matches!(c, AnthropicContent::ToolUse { .. })),
+            "Valid tool_use should be preserved"
+        );
+    }
+
+    #[test]
+    fn test_strip_orphaned_tool_use_adds_placeholder_for_empty_message() {
+        // Assistant message with ONLY a tool_use block (no text)
+        let mut messages = vec![
+            AnthropicMessage {
+                role: "user".to_string(),
+                content: vec![AnthropicContent::Text {
+                    text: "Do something".to_string(),
+                    cache_control: None,
+                }],
+            },
+            AnthropicMessage {
+                role: "assistant".to_string(),
+                content: vec![AnthropicContent::ToolUse {
+                    id: "toolu_only".to_string(),
+                    name: "shell".to_string(),
+                    input: serde_json::json!({"command": "ls"}),
+                }],
+            },
+            AnthropicMessage {
+                role: "user".to_string(),
+                content: vec![AnthropicContent::Text {
+                    text: "Never mind".to_string(),
+                    cache_control: None,
+                }],
+            },
+        ];
+
+        AnthropicProvider::strip_orphaned_tool_use(&mut messages);
+
+        // Should have placeholder text instead of empty content
+        let assistant = &messages[1];
+        assert!(!assistant.content.is_empty(), "Should not have empty content");
+        assert!(
+            assistant.content.iter().any(|c| matches!(c, AnthropicContent::Text { .. })),
+            "Should have placeholder text"
+        );
+        assert!(
+            !assistant.content.iter().any(|c| matches!(c, AnthropicContent::ToolUse { .. })),
+            "tool_use should be stripped"
+        );
     }
 }

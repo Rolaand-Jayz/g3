@@ -565,3 +565,138 @@ async fn test_second_compaction_no_bloat() {
 
     eprintln!("\n✅ Second compaction maintains clean structure without bloat!");
 }
+
+/// Test: Compaction strips structured tool_calls from preserved assistant message
+///
+/// Reproduces the exact bug from the h3 session:
+/// 1. Agent executes a task that triggers a native tool call (read_file)
+/// 2. The assistant message is stored with structured `tool_calls` field
+/// 3. Compaction preserves the last assistant message
+/// 4. The tool_result message is summarized away
+/// 5. Next API call would fail with "tool_use ids were found without tool_result blocks"
+///
+/// After the fix, compaction strips tool_calls from the preserved assistant message.
+#[tokio::test]
+async fn test_compaction_strips_structured_tool_calls() {
+    use g3_providers::MessageToolCall;
+
+    let provider = MockProvider::new()
+        .with_native_tool_calling(true)
+        // Response 1: Summary for compaction
+        .with_response(MockResponse::text(
+            "Summary: User asked to read a file. Assistant read test_file.txt which contained a greeting.",
+        ))
+        // Response 2: Post-compaction response (this would fail with 400 if tool_calls leaked)
+        .with_response(MockResponse::text(
+            "Continuing after compaction. What would you like to do next?",
+        ));
+
+    let (mut agent, _agent_temp) = create_agent_with_mock(provider).await;
+
+    // Directly build the exact conversation state that triggers the bug:
+    // The last assistant message has structured tool_calls, followed by a tool_result,
+    // but the LAST message in the conversation is the assistant with tool_calls
+    // (simulating the case where compaction happens mid-tool-execution or the
+    // last assistant response was a tool call).
+
+    // User asks to read a file
+    agent.add_message_to_context(Message::new(
+        MessageRole::User,
+        "Please read the recognize.rs file".to_string(),
+    ));
+
+    // Assistant responds with text + structured tool_call (this will be the LAST assistant message)
+    let mut assistant_with_tool = Message::new(
+        MessageRole::Assistant,
+        "You're right — the recognizer should serve the corpus. Let me research what it takes.".to_string(),
+    );
+    assistant_with_tool.tool_calls.push(MessageToolCall {
+        id: "toolu_01QRFL8vGKDjZZkfHR586Srb".to_string(),
+        name: "read_file".to_string(),
+        input: serde_json::json!({"file_path": "/tmp/recognize.rs"}),
+    });
+    agent.add_message_to_context(assistant_with_tool);
+
+    // Tool result follows
+    let mut tool_result = Message::new(
+        MessageRole::User,
+        "Tool result: pub fn recognize(lexemes: &[Lexeme]) -> Result<RecognizedStream> { ... }".to_string(),
+    );
+    tool_result.tool_result_id = Some("toolu_01QRFL8vGKDjZZkfHR586Srb".to_string());
+    agent.add_message_to_context(tool_result);
+
+    // Verify the pre-compaction state
+    let history_before = agent.get_context_window().conversation_history.clone();
+    eprintln!("\n=== Before compaction ===");
+    for (i, msg) in history_before.iter().enumerate() {
+        eprintln!(
+            "  {}: {:?} tool_calls={} tool_result_id={:?} content={}...",
+            i,
+            msg.role,
+            msg.tool_calls.len(),
+            msg.tool_result_id,
+            msg.content.chars().take(60).collect::<String>()
+        );
+    }
+
+    // Verify: last assistant message has tool_calls
+    let last_assistant = history_before.iter().rev()
+        .find(|m| matches!(m.role, MessageRole::Assistant))
+        .expect("Should have assistant message");
+    assert_eq!(last_assistant.tool_calls.len(), 1, "Last assistant should have 1 tool_call");
+    assert_eq!(last_assistant.tool_calls[0].id, "toolu_01QRFL8vGKDjZZkfHR586Srb");
+
+    // Trigger compaction
+    let compact_result = agent.force_compact().await;
+    assert!(compact_result.is_ok(), "Compaction should succeed: {:?}", compact_result.err());
+
+    // Verify: no assistant messages with tool_calls after compaction
+    let history_after = &agent.get_context_window().conversation_history;
+
+    eprintln!("\n=== After compaction ===");
+    for (i, msg) in history_after.iter().enumerate() {
+        eprintln!(
+            "  {}: {:?} tool_calls={} tool_result_id={:?} content={}...",
+            i,
+            msg.role,
+            msg.tool_calls.len(),
+            msg.tool_result_id,
+            msg.content.chars().take(60).collect::<String>()
+        );
+    }
+
+    let orphaned_tool_calls: Vec<_> = history_after
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| matches!(m.role, MessageRole::Assistant) && !m.tool_calls.is_empty())
+        .collect();
+
+    assert!(
+        orphaned_tool_calls.is_empty(),
+        "After compaction, no assistant messages should have tool_calls. Found {} orphaned: {:?}",
+        orphaned_tool_calls.len(),
+        orphaned_tool_calls.iter().map(|(i, m)| {
+            format!("msg[{}]: {} tool_calls", i, m.tool_calls.len())
+        }).collect::<Vec<_>>()
+    );
+
+    // Verify the preserved assistant message has text content but no tool_calls
+    let preserved_assistant = history_after.iter()
+        .find(|m| matches!(m.role, MessageRole::Assistant))
+        .expect("Should have preserved assistant message after compaction");
+    assert!(preserved_assistant.tool_calls.is_empty(),
+        "Preserved assistant message should have tool_calls stripped");
+    assert!(preserved_assistant.content.contains("recognizer should serve the corpus"),
+        "Preserved assistant message should retain text content");
+
+    // Execute another task post-compaction to verify the conversation is valid
+    // (this would fail with Anthropic 400 error if tool_calls leaked through)
+    let post_compact_result = agent.execute_task("What should we do next?", None, false).await;
+    assert!(
+        post_compact_result.is_ok(),
+        "Post-compaction task should succeed (no orphaned tool_use blocks): {:?}",
+        post_compact_result.err()
+    );
+
+    eprintln!("\n✅ Compaction correctly strips structured tool_calls - no orphaned tool_use blocks!");
+}
