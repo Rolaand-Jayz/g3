@@ -1182,3 +1182,238 @@ async fn test_triple_stuttered_tool_calls() {
         }
     }
 }
+
+/// Test: Tool call input tokens are tracked in context window
+///
+/// Exact reproduction of the session trace bug from h3 session
+/// create_a_plan_every_time_b38f28e2d722d6da:
+///
+/// - 590 messages, 289 with tool_calls containing 303,046 chars of input
+/// - Context window reported 39% (78,739 tokens) based on content only
+/// - Actual API usage was 200,230 tokens (>100%)
+/// - Compaction never triggered because should_compact() saw 39%
+/// - Next API call got 400 "prompt is too long: 200230 tokens > 200000 maximum"
+///
+/// This test replays a scaled-down version of that message pattern and verifies
+/// that should_compact() triggers when tool_call inputs push past 80%.
+#[tokio::test]
+async fn test_tool_call_input_tokens_tracked_in_context_window() {
+    use g3_core::context_window::ContextWindow;
+    use g3_providers::MessageToolCall;
+
+    // Use 200k tokens like the real session
+    let mut cw = ContextWindow::new(200_000);
+
+    // Add system messages (~18k chars like the real session)
+    cw.add_message(Message::new(
+        MessageRole::System,
+        "You are G3, an AI programming agent. ".repeat(140), // ~5.2k chars
+    ));
+    cw.add_message(Message::new(
+        MessageRole::System,
+        "Workspace memory and project context. ".repeat(350), // ~13.3k chars
+    ));
+
+    // Add a compaction summary (simulating prior compaction)
+    cw.add_message(Message::new(
+        MessageRole::User,
+        "Previous conversation summary: Building a training metrics dashboard...".repeat(10), // ~700 chars
+    ));
+    cw.add_message(Message::new(
+        MessageRole::Assistant,
+        "Continuing work on the recognizer.".to_string(),
+    ));
+
+    // Now simulate the core pattern: many tool calls with large inputs.
+    // The real session had 289 tool calls with avg ~1048 chars of input each.
+    // We scale inputs to produce ~500k chars of tool input total (matching
+    // the real session's ratio where tool inputs were ~57% of all chars).
+    //
+    // Key tool types from the session:
+    // - plan_write: ~10-13k chars input each (6 calls)
+    // - str_replace: ~500-9k chars input each (50+ calls)
+    // - shell: ~700-28k chars input each (30+ calls)
+    // - write_envelope: ~3.9k chars input (1 call, the final straw)
+
+    let mut compaction_triggered_at_msg: Option<usize> = None;
+    let mut msg_count = 4; // system + summary messages above
+
+    // Simulate plan_write calls (large inputs)
+    for i in 0..5 {
+        let plan_yaml = format!(
+            "plan_id: test-plan\nrevision: {}\nitems:\n{}",
+            i + 1,
+            "  - id: I1\n    description: Test item with lots of detail about the recognizer implementation including token types and obligation handling\n    state: doing\n    touches: [src/recognize.rs, src/token.rs, src/obligation.rs, src/grammar.rs]\n    checks:\n      happy:\n        desc: All forms recognized correctly\n        target: recognize::tests\n".repeat(60)
+        );
+        let mut msg = Message::new(MessageRole::Assistant, format!("Updating plan revision {}.", i + 1));
+        msg.tool_calls.push(MessageToolCall {
+            id: format!("toolu_plan_{}", i),
+            name: "plan_write".to_string(),
+            input: serde_json::json!({"plan": plan_yaml}),
+        });
+        cw.add_message(msg);
+        msg_count += 1;
+
+        let mut result = Message::new(MessageRole::User, "Tool result: Plan updated.".to_string());
+        result.tool_result_id = Some(format!("toolu_plan_{}", i));
+        cw.add_message(result);
+        msg_count += 1;
+
+        if compaction_triggered_at_msg.is_none() && cw.should_compact() {
+            compaction_triggered_at_msg = Some(msg_count);
+        }
+    }
+
+    // Simulate str_replace calls (medium inputs)
+    for i in 0..40 {
+        let diff_content = format!(
+            "@@ -1,5 +1,50 @@\n-old line\n+{}\n context line\n+{}\n",
+            format!("    pub fn recognize_form_{i}(&mut self, token: Token) -> Result<Obligation, RecognizeError> {{\n        match token {{\n            Token::StartBegin => self.push_obligation(NeedBeginBodyOrClose),\n            Token::StartSetBang => self.push_obligation(NeedSetBangName),\n            _ => Err(RecognizeError::UnexpectedToken(token)),\n        }}\n    }}\n").repeat(6),
+            format!("    #[test]\n    fn test_recognize_form_{i}() {{\n        let mut r = Recognizer::new();\n        assert!(r.recognize_form_{i}(Token::StartBegin).is_ok());\n    }}\n").repeat(6),
+        );
+        let mut msg = Message::new(MessageRole::Assistant, "Applying diff.".to_string());
+        msg.tool_calls.push(MessageToolCall {
+            id: format!("toolu_str_{}", i),
+            name: "str_replace".to_string(),
+            input: serde_json::json!({
+                "file_path": "src/recognize.rs",
+                "diff": diff_content
+            }),
+        });
+        cw.add_message(msg);
+        msg_count += 1;
+
+        let mut result = Message::new(MessageRole::User, "Tool result: Applied diff.".to_string());
+        result.tool_result_id = Some(format!("toolu_str_{}", i));
+        cw.add_message(result);
+        msg_count += 1;
+
+        if compaction_triggered_at_msg.is_none() && cw.should_compact() {
+            compaction_triggered_at_msg = Some(msg_count);
+        }
+    }
+
+    // Simulate shell calls (variable size inputs, some very large)
+    for i in 0..30 {
+        let command = if i % 3 == 0 {
+            // Large shell commands (like Python scripts generating corpus files)
+            format!(
+                "python3 << 'EOF'\nimport os\nfor i in range(100):\n    with open(f'corpus/{{i:03d}}.scm', 'w') as f:\n        f.write('(define (func-{{}} x) (+ x 1))'.format(i))\n{}\nEOF",
+                "    f.write('(define (helper-{i} x y) (if (> x y) (- x y) (+ x y)))\\n')\n".repeat(250)
+            )
+        } else {
+            format!("cargo test --test test_{}", i)
+        };
+        let mut msg = Message::new(MessageRole::Assistant, "".to_string());
+        msg.tool_calls.push(MessageToolCall {
+            id: format!("toolu_sh_{}", i),
+            name: "shell".to_string(),
+            input: serde_json::json!({"command": command}),
+        });
+        // Force-add messages with empty content but tool_calls
+        cw.conversation_history.push(msg.clone());
+        let tc_tokens = ContextWindow::estimate_message_tokens(&msg);
+        cw.used_tokens += tc_tokens;
+        cw.cumulative_tokens += tc_tokens;
+        msg_count += 1;
+
+        let mut result = Message::new(
+            MessageRole::User,
+            format!(
+                "Tool result: Finished `dev` profile target(s) in 0.02s\n     Running `target/debug/hcube -t corpus/`\n\nTraining complete: {} observations, {} unique keys, hit_rate={:.3}\n{}",
+                i * 1000 + 500, i * 100 + 50, 0.696,
+                "  form recognized: (define ...)\n".repeat(20)
+            ),
+        );
+        result.tool_result_id = Some(format!("toolu_sh_{}", i));
+        cw.add_message(result);
+        msg_count += 1;
+
+        if compaction_triggered_at_msg.is_none() && cw.should_compact() {
+            compaction_triggered_at_msg = Some(msg_count);
+        }
+    }
+
+    // Simulate the write_envelope call (the final straw in the real session)
+    let envelope_yaml = format!(
+        "type: code_change\nfacts:\n  recognizer_expansion:\n    new_special_forms: {}\n    new_tokens: [\"StartBegin\", \"StartSetBang\", \"StartLetStar\", \"StartLetrec\", \"CloseLetStar\", \"CloseLetrec\", \"StartCase\", \"StartDo\"]\n    new_binding_roles: [\"LetStar\", \"Letrec\", \"Do\"]\n    new_obligations:\n{}\n    files_touched:\n{}",
+        "[\"begin\", \"set!\", \"let*\", \"letrec\", \"case\", \"do\"]",
+        "      - \"NeedBeginBodyOrClose\"\n      - \"NeedSetBangName\"\n      - \"NeedSetBangExpr\"\n".repeat(10),
+        "      - \"src/token.rs\"\n      - \"src/obligation.rs\"\n      - \"src/grammar.rs\"\n      - \"src/recognize.rs\"\n".repeat(10)
+    );
+    let mut msg = Message::new(MessageRole::Assistant, "Writing envelope.".to_string());
+    msg.tool_calls.push(MessageToolCall {
+        id: "toolu_envelope".to_string(),
+        name: "write_envelope".to_string(),
+        input: serde_json::json!({"facts": envelope_yaml}),
+    });
+    cw.add_message(msg);
+
+    // ====================================================================
+    // Assertions
+    // ====================================================================
+
+    // 1. should_compact MUST have triggered before we reached 100%
+    assert!(
+        compaction_triggered_at_msg.is_some(),
+        "should_compact() should have triggered during the session! \
+         Final percentage: {:.1}%, used_tokens: {}, total_tokens: {}",
+        cw.percentage_used(),
+        cw.used_tokens,
+        cw.total_tokens,
+    );
+
+    let trigger_msg = compaction_triggered_at_msg.unwrap();
+    assert!(
+        trigger_msg < msg_count,
+        "Compaction should trigger well before the last message (triggered at msg {}, total {})",
+        trigger_msg,
+        msg_count,
+    );
+
+    // 2. Verify the OLD behavior would have MISSED compaction.
+    // Calculate what used_tokens would be with content-only estimation.
+    let content_only_tokens: u32 = cw
+        .conversation_history
+        .iter()
+        .map(|m| ContextWindow::estimate_tokens(&m.content))
+        .sum();
+    let content_only_percentage = (content_only_tokens as f32 / 200_000.0) * 100.0;
+
+    // The content-only estimate should be well below 80% (the compaction threshold)
+    // In the real session it was 39%.
+    assert!(
+        content_only_percentage < 80.0,
+        "Content-only token estimate ({:.1}%) should be below 80% compaction threshold \
+         (this proves the old code would have missed compaction). \
+         Content-only tokens: {}",
+        content_only_percentage,
+        content_only_tokens,
+    );
+
+    // 3. The actual tracked percentage (with tool_calls) should be >= 80%
+    assert!(
+        cw.percentage_used() >= 80.0,
+        "Actual percentage with tool_call tracking ({:.1}%) should be >= 80%",
+        cw.percentage_used(),
+    );
+
+    // 4. The gap between content-only and actual should be significant
+    let gap = cw.percentage_used() - content_only_percentage;
+    assert!(
+        gap > 20.0,
+        "Gap between actual ({:.1}%) and content-only ({:.1}%) should be >20% \
+         (tool_call inputs are a major portion of real token usage). Gap: {:.1}%",
+        cw.percentage_used(),
+        content_only_percentage,
+        gap,
+    );
+
+    // 5. recalculate_tokens should agree with the tracked count
+    let tracked = cw.used_tokens;
+    cw.recalculate_tokens();
+    assert_eq!(
+        cw.used_tokens, tracked,
+        "recalculate_tokens() should agree with incrementally tracked used_tokens"
+    );
+}

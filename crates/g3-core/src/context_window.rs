@@ -109,7 +109,7 @@ impl ContextWindow {
             return;
         }
 
-        let token_count = tokens.unwrap_or_else(|| Self::estimate_tokens(&message.content));
+        let token_count = tokens.unwrap_or_else(|| Self::estimate_message_tokens(&message));
         self.used_tokens += token_count;
         self.cumulative_tokens += token_count;
         self.conversation_history.push(message);
@@ -134,7 +134,7 @@ impl ContextWindow {
         self.used_tokens = self
             .conversation_history
             .iter()
-            .map(|m| Self::estimate_tokens(&m.content))
+            .map(|m| Self::estimate_message_tokens(m))
             .sum();
         self.last_thinning_percentage = 0;
     }
@@ -178,7 +178,7 @@ impl ContextWindow {
         self.used_tokens = self
             .conversation_history
             .iter()
-            .map(|m| Self::estimate_tokens(&m.content))
+            .map(|m| Self::estimate_message_tokens(m))
             .sum();
         debug!("Recalculated tokens after thinning: {} tokens", self.used_tokens);
     }
@@ -195,6 +195,29 @@ impl ContextWindow {
             (text.len() as f32 / 4.0).ceil() as u32
         };
         (base_estimate as f32 * 1.1).ceil() as u32
+    }
+
+    /// Estimate tokens for a full message, including structured tool_calls.
+    ///
+    /// When the message is sent to the API, tool_calls are serialized as
+    /// structured blocks (e.g. Anthropic `tool_use`) whose input JSON counts
+    /// toward the prompt token budget.  `estimate_tokens()` only looks at
+    /// `message.content`, so tool_call inputs were previously invisible to
+    /// the token tracker — causing used_tokens to massively undercount and
+    /// compaction to never trigger.
+    pub fn estimate_message_tokens(message: &Message) -> u32 {
+        let mut total = Self::estimate_tokens(&message.content);
+        for tc in &message.tool_calls {
+            // Serialize the input Value to a string for size estimation.
+            // Tool call inputs are always JSON/structured, so use the
+            // code/JSON heuristic (chars/3 * 1.1).
+            let input_str = tc.input.to_string();
+            let base = (input_str.len() as f32 / 3.0).ceil() as u32;
+            let tc_tokens = (base as f32 * 1.1).ceil() as u32;
+            // Also count the tool name + id overhead (~20 tokens)
+            total += tc_tokens + 20;
+        }
+        total
     }
 
     // ========================================================================
@@ -1001,5 +1024,150 @@ mod tests {
         assert_eq!(assistant_msgs.len(), 1);
         assert!(assistant_msgs[0].tool_calls.is_empty());
         assert!(assistant_msgs[0].content.contains("Hello! How can I help you today?"));
+    }
+
+    // ====================================================================
+    // Tool-call token tracking tests
+    // ====================================================================
+
+    #[test]
+    fn test_estimate_message_tokens_content_only() {
+        // Message without tool_calls should behave like estimate_tokens
+        let msg = Message::new(MessageRole::Assistant, "Hello world".to_string());
+        let msg_tokens = ContextWindow::estimate_message_tokens(&msg);
+        let text_tokens = ContextWindow::estimate_tokens("Hello world");
+        assert_eq!(msg_tokens, text_tokens);
+    }
+
+    #[test]
+    fn test_estimate_message_tokens_with_tool_calls() {
+        // Message with tool_calls should count both content and tool input
+        let mut msg = Message::new(MessageRole::Assistant, "Let me read that.".to_string());
+        msg.tool_calls.push(MessageToolCall {
+            id: "toolu_abc".to_string(),
+            name: "shell".to_string(),
+            input: serde_json::json!({"command": "echo hello world this is a moderately long command string for testing purposes"}),
+        });
+
+        let msg_tokens = ContextWindow::estimate_message_tokens(&msg);
+        let text_only_tokens = ContextWindow::estimate_tokens("Let me read that.");
+
+        // Must be strictly greater than text-only estimate
+        assert!(
+            msg_tokens > text_only_tokens,
+            "estimate_message_tokens ({}) should be > text-only estimate ({})",
+            msg_tokens, text_only_tokens
+        );
+
+        // The tool input is ~90 chars of JSON → ~30 tokens + 20 overhead = ~50 extra
+        assert!(
+            msg_tokens >= text_only_tokens + 20,
+            "tool_call should add at least 20 tokens overhead, got delta={}",
+            msg_tokens - text_only_tokens
+        );
+    }
+
+    #[test]
+    fn test_estimate_message_tokens_empty_content_with_tool_calls() {
+        // Message with empty content but tool_calls should still count tool input
+        let mut msg = Message::new(MessageRole::Assistant, "".to_string());
+        msg.tool_calls.push(MessageToolCall {
+            id: "toolu_xyz".to_string(),
+            name: "write_envelope".to_string(),
+            input: serde_json::json!({"facts": "a]".repeat(1000)}),
+        });
+
+        let tokens = ContextWindow::estimate_message_tokens(&msg);
+        assert!(tokens > 100, "Large tool input should produce significant token count, got {}", tokens);
+    }
+
+    #[test]
+    fn test_estimate_message_tokens_large_tool_input() {
+        // Simulate the write_envelope case: 3751 chars of YAML in tool input
+        let large_yaml = "a: b\n".repeat(750); // ~3750 chars
+        let mut msg = Message::new(MessageRole::Assistant, "Writing envelope.".to_string());
+        msg.tool_calls.push(MessageToolCall {
+            id: "toolu_env".to_string(),
+            name: "write_envelope".to_string(),
+            input: serde_json::json!({"facts": large_yaml}),
+        });
+
+        let tokens = ContextWindow::estimate_message_tokens(&msg);
+        // 3750 chars of JSON / 3 * 1.1 ≈ 1375 tokens + 20 overhead + content tokens
+        assert!(tokens > 1000, "Large tool input should produce >1000 tokens, got {}", tokens);
+    }
+
+    #[test]
+    fn test_add_message_counts_tool_call_tokens() {
+        let mut cw = ContextWindow::new(200_000);
+
+        // Add a message with tool_calls
+        let mut msg = Message::new(MessageRole::Assistant, "Running command.".to_string());
+        msg.tool_calls.push(MessageToolCall {
+            id: "toolu_1".to_string(),
+            name: "shell".to_string(),
+            input: serde_json::json!({"command": "x]".repeat(500)}),
+        });
+
+        cw.add_message(msg);
+
+        // used_tokens should reflect the tool_call input, not just the content
+        let content_only = ContextWindow::estimate_tokens("Running command.");
+        assert!(
+            cw.used_tokens > content_only,
+            "used_tokens ({}) should be > content-only estimate ({})",
+            cw.used_tokens, content_only
+        );
+    }
+
+    #[test]
+    fn test_should_compact_triggers_with_tool_call_tokens() {
+        // Reproduce the core bug: tool_calls push real usage past 80% but
+        // the old code would have tracked only content tokens (staying low).
+        let mut cw = ContextWindow::new(1000);
+
+        // Add a message with small content but large tool input
+        // Content: ~5 tokens. Tool input: ~1000 chars → ~367 tokens + 20 = ~387
+        // Total: ~392 tokens → 39% of 1000. Not enough alone.
+        // Add several to push past 80%.
+        for i in 0..3 {
+            let mut msg = Message::new(MessageRole::Assistant, "ok".to_string());
+            msg.tool_calls.push(MessageToolCall {
+                id: format!("toolu_{}", i),
+                name: "shell".to_string(),
+                input: serde_json::json!({"command": "x".repeat(800)}),
+            });
+            cw.add_message(msg);
+            // Also add a tool result
+            let mut result = Message::new(MessageRole::User, "Tool result: done".to_string());
+            result.tool_result_id = Some(format!("toolu_{}", i));
+            cw.add_message(result);
+        }
+
+        // With tool_call tracking, should_compact should trigger
+        assert!(
+            cw.should_compact(),
+            "should_compact should trigger when tool_calls push past 80%, percentage={}%",
+            cw.percentage_used()
+        );
+    }
+
+    #[test]
+    fn test_recalculate_tokens_includes_tool_calls() {
+        let mut cw = ContextWindow::new(200_000);
+
+        let mut msg = Message::new(MessageRole::Assistant, "hi".to_string());
+        msg.tool_calls.push(MessageToolCall {
+            id: "toolu_r".to_string(),
+            name: "shell".to_string(),
+            input: serde_json::json!({"command": "x".repeat(600)}),
+        });
+        cw.add_message(msg);
+
+        let tokens_after_add = cw.used_tokens;
+        cw.recalculate_tokens();
+
+        assert_eq!(cw.used_tokens, tokens_after_add,
+            "recalculate_tokens should produce same result as add_message for tool_call messages");
     }
 }

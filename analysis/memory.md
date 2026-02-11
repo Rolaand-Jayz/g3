@@ -1,5 +1,5 @@
 # Workspace Memory
-> Updated: 2026-02-11T03:39:03Z | Size: 29.0k chars
+> Updated: 2026-02-11T05:07:33Z | Size: 30.0k chars
 
 ### Remember Tool Wiring
 - `crates/g3-core/src/tools/memory.rs` [0..5000] - `execute_remember()`, `get_memory_path()`, `merge_memory()`
@@ -453,3 +453,10 @@ Makes tool output responsive to terminal width - no line wrapping, with 4-char r
   - Post-processing pass in `convert_messages()` detects orphaned `tool_use` blocks (no matching `tool_result` in next message)
   - Strips orphaned blocks with warning, adds placeholder text if message becomes empty
 - Tests: `test_compaction_strips_tool_calls_from_last_assistant`, `test_compaction_drops_assistant_with_only_tool_calls_no_text`, `test_compaction_preserves_normal_assistant_message` (unit), `test_strip_orphaned_tool_use_*` (anthropic), `test_compaction_strips_structured_tool_calls` (integration)
+
+### Tool Call Token Tracking Fix (2026-02-11)
+- `crates/g3-core/src/context_window.rs` [199..220] - `estimate_message_tokens()` accounts for both `message.content` and `message.tool_calls[].input`
+- **Root cause**: `estimate_tokens()` only counted `message.content` chars, ignoring `tool_calls[].input` JSON. When sent to API, `tool_use` blocks include full input, causing massive undercount.
+- **Impact**: In a real session, 303k chars of tool input (101k tokens) were invisible to the tracker. Context showed 39% but actual was >100%. Compaction never triggered → API 400 error.
+- **Fix**: Added `estimate_message_tokens(message)` that sums content tokens + per-tool-call input tokens (chars/3 * 1.1 + 20 overhead). Updated `add_message_with_tokens()`, `recalculate_tokens()`, `clear_conversation()` to use it.
+- **Tests**: 7 unit tests in `context_window.rs`, 1 integration test in `mock_provider_integration_test.rs::test_tool_call_input_tokens_tracked_in_context_window`
