@@ -281,32 +281,50 @@ impl AnthropicProvider {
                     }
                 }
                 MessageRole::User => {
-                    // Build content blocks - images first, then text
                     let mut content_blocks: Vec<AnthropicContent> = Vec::new();
-
-                    // Add any images attached to this message
-                    for image in &message.images {
-                        content_blocks.push(AnthropicContent::Image {
-                            source: AnthropicImageSource {
-                                source_type: "base64".to_string(),
-                                media_type: image.media_type.clone(),
-                                data: image.data.clone(),
-                            },
-                        });
-                    }
 
                     // Check if this is a tool result message
                     if let Some(ref tool_use_id) = message.tool_result_id {
+                        // If images are attached, use structured content (array of blocks)
+                        // inside the tool_result. Anthropic API rejects top-level Image
+                        // blocks mixed with ToolResult blocks in the same user message.
+                        let content = if message.images.is_empty() {
+                            ToolResultContent::Text(message.content.clone())
+                        } else {
+                            let mut blocks: Vec<ToolResultBlock> = Vec::new();
+                            for image in &message.images {
+                                blocks.push(ToolResultBlock::Image {
+                                    source: AnthropicImageSource {
+                                        source_type: "base64".to_string(),
+                                        media_type: image.media_type.clone(),
+                                        data: image.data.clone(),
+                                    },
+                                });
+                            }
+                            blocks.push(ToolResultBlock::Text {
+                                text: message.content.clone(),
+                            });
+                            ToolResultContent::Blocks(blocks)
+                        };
                         content_blocks.push(AnthropicContent::ToolResult {
                             tool_use_id: tool_use_id.clone(),
-                            content: message.content.clone(),
+                            content,
                             cache_control: message
                                 .cache_control
                                 .as_ref()
                                 .map(Self::convert_cache_control),
                         });
                     } else {
-                        // Regular text content
+                        // Regular user message: images as top-level blocks, then text
+                        for image in &message.images {
+                            content_blocks.push(AnthropicContent::Image {
+                                source: AnthropicImageSource {
+                                    source_type: "base64".to_string(),
+                                    media_type: image.media_type.clone(),
+                                    data: image.data.clone(),
+                                },
+                            });
+                        }
                         content_blocks.push(AnthropicContent::Text {
                             text: message.content.clone(),
                             cache_control: message
@@ -786,6 +804,7 @@ impl AnthropicProvider {
         let _ = tx.send(Ok(final_chunk)).await;
         accumulated_usage
     }
+
 }
 
 #[async_trait::async_trait]
@@ -1039,10 +1058,57 @@ enum AnthropicContent {
     #[serde(rename = "tool_result")]
     ToolResult {
         tool_use_id: String,
-        content: String,
+        content: ToolResultContent,
         #[serde(skip_serializing_if = "Option::is_none")]
         cache_control: Option<crate::CacheControl>,
     },
+}
+
+/// Content for a tool_result block. Can be either a simple string or an array
+/// of content blocks (text + images). The Anthropic API accepts both forms.
+/// We use the array form when images are present (e.g., from read_image).
+#[derive(Debug, Clone)]
+enum ToolResultContent {
+    /// Simple text content: serializes as `"content": "text"`
+    Text(String),
+    /// Structured content blocks: serializes as `"content": [{"type": "image", ...}, {"type": "text", ...}]`
+    Blocks(Vec<ToolResultBlock>),
+}
+
+/// A content block inside a tool_result's content array.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+enum ToolResultBlock {
+    #[serde(rename = "image")]
+    Image { source: AnthropicImageSource },
+    #[serde(rename = "text")]
+    Text { text: String },
+}
+
+impl Serialize for ToolResultContent {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            ToolResultContent::Text(s) => serializer.serialize_str(s),
+            ToolResultContent::Blocks(blocks) => blocks.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ToolResultContent {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // For deserialization, we only need to handle the string case (API responses don't
+        // send tool_result back to us). But handle both for completeness.
+        let value = serde_json::Value::deserialize(deserializer)?;
+        match value {
+            serde_json::Value::String(s) => Ok(ToolResultContent::Text(s)),
+            serde_json::Value::Array(_) => {
+                let blocks: Vec<ToolResultBlock> = serde_json::from_value(value)
+                    .map_err(serde::de::Error::custom)?;
+                Ok(ToolResultContent::Blocks(blocks))
+            }
+            _ => Ok(ToolResultContent::Text(value.to_string())),
+        }
+    }
 }
 
 /// Image source for Anthropic API
@@ -1465,7 +1531,7 @@ mod tests {
                 role: "user".to_string(),
                 content: vec![AnthropicContent::ToolResult {
                     tool_use_id: "toolu_valid".to_string(),
-                    content: "file contents".to_string(),
+                    content: ToolResultContent::Text("file contents".to_string()),
                     cache_control: None,
                 }],
             },
@@ -1521,6 +1587,234 @@ mod tests {
         assert!(
             !assistant.content.iter().any(|c| matches!(c, AnthropicContent::ToolUse { .. })),
             "tool_use should be stripped"
+        );
+    }
+
+    #[test]
+    fn test_tool_result_with_images_nested_inside() {
+        // When a tool result message has images (e.g., from read_image),
+        // the images must be nested inside the tool_result content array,
+        // NOT as top-level Image blocks alongside the ToolResult block.
+        let provider =
+            AnthropicProvider::new("test-key".to_string(), None, None, None, None, None, None)
+                .unwrap();
+
+        let mut msg = Message::new(
+            MessageRole::User,
+            "Tool result: 2 image(s) read.".to_string(),
+        );
+        msg.tool_result_id = Some("toolu_01JQBMs7hdNpy3VBiJkJwykC".to_string());
+        msg.images = vec![
+            crate::ImageContent::new("image/png", "base64data1".to_string()),
+            crate::ImageContent::new("image/jpeg", "base64data2".to_string()),
+        ];
+
+        // Also need an assistant message with the tool_use before it
+        let mut assistant_msg = Message::new(MessageRole::Assistant, String::new());
+        assistant_msg.tool_calls.push(crate::MessageToolCall {
+            id: "toolu_01JQBMs7hdNpy3VBiJkJwykC".to_string(),
+            name: "read_image".to_string(),
+            input: serde_json::json!({"file_paths": ["a.png", "b.jpg"]}),
+        });
+
+        let messages = vec![
+            Message::new(MessageRole::User, "Read these images".to_string()),
+            assistant_msg,
+            msg,
+        ];
+
+        let (_, anthropic_messages) = provider.convert_messages(&messages).unwrap();
+
+        // The user tool result message should have exactly ONE content block (the ToolResult)
+        let tool_result_msg = &anthropic_messages[2];
+        assert_eq!(tool_result_msg.role, "user");
+        assert_eq!(
+            tool_result_msg.content.len(),
+            1,
+            "Should have exactly 1 content block (ToolResult), not images + ToolResult"
+        );
+
+        // Verify it's a ToolResult with structured content
+        match &tool_result_msg.content[0] {
+            AnthropicContent::ToolResult {
+                tool_use_id,
+                content,
+                ..
+            } => {
+                assert_eq!(tool_use_id, "toolu_01JQBMs7hdNpy3VBiJkJwykC");
+                match content {
+                    ToolResultContent::Blocks(blocks) => {
+                        assert_eq!(blocks.len(), 3, "Should have 2 images + 1 text block");
+                        // First two should be images
+                        assert!(matches!(&blocks[0], ToolResultBlock::Image { .. }));
+                        assert!(matches!(&blocks[1], ToolResultBlock::Image { .. }));
+                        // Last should be text
+                        match &blocks[2] {
+                            ToolResultBlock::Text { text } => {
+                                assert_eq!(text, "Tool result: 2 image(s) read.");
+                            }
+                            _ => panic!("Expected text block at position 2"),
+                        }
+                    }
+                    ToolResultContent::Text(_) => {
+                        panic!("Expected Blocks content for tool result with images");
+                    }
+                }
+            }
+            other => panic!("Expected ToolResult, got {:?}", other),
+        }
+
+        // Verify no top-level Image blocks in the message
+        assert!(
+            !tool_result_msg
+                .content
+                .iter()
+                .any(|c| matches!(c, AnthropicContent::Image { .. })),
+            "Images should NOT be top-level blocks in a tool_result message"
+        );
+
+        // Verify the JSON serialization looks correct
+        let json = serde_json::to_value(&tool_result_msg).unwrap();
+        let content_arr = json["content"].as_array().unwrap();
+        assert_eq!(content_arr.len(), 1);
+        let tr = &content_arr[0];
+        assert_eq!(tr["type"], "tool_result");
+        assert_eq!(tr["tool_use_id"], "toolu_01JQBMs7hdNpy3VBiJkJwykC");
+        // content should be an array (structured), not a string
+        assert!(
+            tr["content"].is_array(),
+            "tool_result content should be an array when images present"
+        );
+        let inner = tr["content"].as_array().unwrap();
+        assert_eq!(inner.len(), 3);
+        assert_eq!(inner[0]["type"], "image");
+        assert_eq!(inner[1]["type"], "image");
+        assert_eq!(inner[2]["type"], "text");
+    }
+
+    #[test]
+    fn test_tool_result_without_images_uses_string_content() {
+        // Regular tool results (no images) should still use simple string content
+        let provider =
+            AnthropicProvider::new("test-key".to_string(), None, None, None, None, None, None)
+                .unwrap();
+
+        let mut msg = Message::new(
+            MessageRole::User,
+            "Tool result: file contents here".to_string(),
+        );
+        msg.tool_result_id = Some("toolu_abc123".to_string());
+        // No images
+
+        let mut assistant_msg = Message::new(MessageRole::Assistant, String::new());
+        assistant_msg.tool_calls.push(crate::MessageToolCall {
+            id: "toolu_abc123".to_string(),
+            name: "read_file".to_string(),
+            input: serde_json::json!({"file_path": "test.rs"}),
+        });
+
+        let messages = vec![
+            Message::new(MessageRole::User, "Read the file".to_string()),
+            assistant_msg,
+            msg,
+        ];
+
+        let (_, anthropic_messages) = provider.convert_messages(&messages).unwrap();
+
+        let tool_result_msg = &anthropic_messages[2];
+        assert_eq!(tool_result_msg.content.len(), 1);
+
+        // Verify the JSON has string content (not array)
+        let json = serde_json::to_value(&tool_result_msg).unwrap();
+        let tr = &json["content"][0];
+        assert_eq!(tr["type"], "tool_result");
+        assert!(
+            tr["content"].is_string(),
+            "tool_result content should be a string when no images: got {:?}",
+            tr["content"]
+        );
+        assert_eq!(tr["content"], "Tool result: file contents here");
+    }
+
+    #[test]
+    fn test_regular_user_message_with_images_uses_top_level_blocks() {
+        // Non-tool-result user messages should still have images as top-level blocks
+        let provider =
+            AnthropicProvider::new("test-key".to_string(), None, None, None, None, None, None)
+                .unwrap();
+
+        let mut msg = Message::new(MessageRole::User, "What's in this image?".to_string());
+        // No tool_result_id — this is a regular user message
+        msg.images = vec![crate::ImageContent::new(
+            "image/png",
+            "base64data".to_string(),
+        )];
+
+        let messages = vec![msg];
+        let (_, anthropic_messages) = provider.convert_messages(&messages).unwrap();
+
+        let user_msg = &anthropic_messages[0];
+        assert_eq!(user_msg.content.len(), 2, "Should have Image + Text blocks");
+        assert!(matches!(
+            &user_msg.content[0],
+            AnthropicContent::Image { .. }
+        ));
+        assert!(matches!(
+            &user_msg.content[1],
+            AnthropicContent::Text { .. }
+        ));
+    }
+
+    #[test]
+    fn test_strip_orphaned_tool_use_works_with_structured_tool_result() {
+        // Ensure orphan detection still works when tool_result has structured content
+        let mut messages = vec![
+            AnthropicMessage {
+                role: "user".to_string(),
+                content: vec![AnthropicContent::Text {
+                    text: "Read images".to_string(),
+                    cache_control: None,
+                }],
+            },
+            AnthropicMessage {
+                role: "assistant".to_string(),
+                content: vec![AnthropicContent::ToolUse {
+                    id: "toolu_img".to_string(),
+                    name: "read_image".to_string(),
+                    input: serde_json::json!({"file_paths": ["a.png"]}),
+                }],
+            },
+            AnthropicMessage {
+                role: "user".to_string(),
+                content: vec![AnthropicContent::ToolResult {
+                    tool_use_id: "toolu_img".to_string(),
+                    content: ToolResultContent::Blocks(vec![
+                        ToolResultBlock::Image {
+                            source: AnthropicImageSource {
+                                source_type: "base64".to_string(),
+                                media_type: "image/png".to_string(),
+                                data: "data".to_string(),
+                            },
+                        },
+                        ToolResultBlock::Text {
+                            text: "1 image(s) read.".to_string(),
+                        },
+                    ]),
+                    cache_control: None,
+                }],
+            },
+        ];
+
+        AnthropicProvider::strip_orphaned_tool_use(&mut messages);
+
+        // tool_use should NOT be stripped — it has a matching tool_result
+        let assistant = &messages[1];
+        assert!(
+            assistant
+                .content
+                .iter()
+                .any(|c| matches!(c, AnthropicContent::ToolUse { .. })),
+            "Valid tool_use with structured tool_result should be preserved"
         );
     }
 }
