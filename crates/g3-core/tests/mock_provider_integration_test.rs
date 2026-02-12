@@ -1129,6 +1129,65 @@ async fn test_cross_turn_same_tool_call_executes() {
     assert_eq!(tool_result_count, 2, "Should have 2 tool results (one per turn), got {}", tool_result_count);
 }
 
+/// Test: Native polling tool (research_status) called with identical args across
+/// auto-continue iterations must NOT be deduplicated.
+///
+/// Reproduces the exact bug: model calls research_status in iteration 1, gets the
+/// tool result, auto-continues to iteration 2, and calls research_status again with
+/// identical args. Each Anthropic API response assigns a unique tool_use ID (toolu_*).
+/// The old dedup logic compared only name+args, ignoring IDs, so the second call was
+/// marked DUP IN MSG and skipped. With no tool executed and no text content, the
+/// stream errored with "No response received from the model."
+#[tokio::test]
+async fn test_native_polling_tool_not_deduplicated_across_turns() {
+    let provider = MockProvider::new()
+        .with_native_tool_calling(true)
+        // Iteration 1: model calls research_status (gets unique ID)
+        .with_response(MockResponse::native_tool_call(
+            "research_status",
+            serde_json::json!({}),
+        ))
+        // Iteration 2 (auto-continue): model calls research_status AGAIN
+        // with identical args but a DIFFERENT unique ID
+        .with_response(MockResponse::native_tool_call(
+            "research_status",
+            serde_json::json!({}),
+        ))
+        // Iteration 3 (auto-continue): model produces text, ending the turn
+        .with_default_response(MockResponse::text("Research complete."));
+
+    let (mut agent, _temp_dir) = create_agent_with_mock(provider).await;
+
+    // Single execute_task: model calls research_status twice via auto-continue,
+    // then produces text. Before the fix, the second research_status call would
+    // be falsely deduplicated as DUP IN MSG, causing "No response received".
+    let result = agent.execute_task("Check research status", None, false).await;
+    assert!(result.is_ok(), "Task should succeed: {:?}", result.err());
+
+    let history = &agent.get_context_window().conversation_history;
+
+    // Both research_status calls should have produced a tool result
+    let tool_result_count = history
+        .iter()
+        .filter(|m| matches!(m.role, MessageRole::User) && m.content.contains("Tool result:"))
+        .count();
+    assert_eq!(
+        tool_result_count, 2,
+        "Both research_status calls should execute (not deduplicated across iterations). Got {} tool results",
+        tool_result_count
+    );
+
+    // Verify both tool calls were stored with different IDs
+    let research_tool_calls: Vec<_> = history
+        .iter()
+        .filter(|m| matches!(m.role, MessageRole::Assistant))
+        .flat_map(|m| m.tool_calls.iter())
+        .filter(|tc| tc.name == "research_status")
+        .collect();
+    assert_eq!(research_tool_calls.len(), 2, "Should have 2 research_status tool calls stored");
+    assert_ne!(research_tool_calls[0].id, research_tool_calls[1].id, "Tool call IDs should differ");
+}
+
 /// Test: Three identical tool calls in one response - first executes, rest deduped
 ///
 /// Boundary case: model stutters three times.

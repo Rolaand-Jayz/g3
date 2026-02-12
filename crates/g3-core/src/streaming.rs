@@ -177,6 +177,8 @@ pub struct IterationState {
     pub raw_chunks: Vec<String>,
     pub accumulated_usage: Option<g3_providers::Usage>,
     pub stream_stop_reason: Option<String>,
+    /// Last tool call executed in this iteration (for cross-chunk dedup within same response)
+    pub last_executed_tool: Option<ToolCall>,
 }
 
 impl IterationState {
@@ -189,6 +191,7 @@ impl IterationState {
             raw_chunks: Vec::new(),
             accumulated_usage: None,
             stream_stop_reason: None,
+            last_executed_tool: None,
         }
     }
 

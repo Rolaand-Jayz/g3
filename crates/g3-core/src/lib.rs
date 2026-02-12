@@ -1376,9 +1376,12 @@ impl<W: UiWriter> Agent<W> {
 
     /// Check if a tool call is a duplicate of the last tool call in the previous assistant message.
     /// Returns Some("DUP IN MSG") if it's a duplicate, None otherwise.
-    fn check_duplicate_in_previous_message(&self, tool_call: &ToolCall) -> Option<String> {
-        // Find the most recent assistant message
-        for msg in self.context_window.conversation_history.iter().rev() {
+    fn check_duplicate_in_previous_message(&self, tool_call: &ToolCall, history_cutoff: usize) -> Option<String> {
+        // Find the most recent assistant message, but only look at messages that
+        // existed before the current streaming iteration started. This prevents
+        // tool calls within the same response from being marked as DUP IN MSG
+        // against messages added during the current iteration's tool execution.
+        for msg in self.context_window.conversation_history[..history_cutoff].iter().rev() {
             if !matches!(msg.role, MessageRole::Assistant) {
                 continue;
             }
@@ -1386,13 +1389,27 @@ impl<W: UiWriter> Agent<W> {
             // Check structured tool_calls first (native tool calling)
             if !msg.tool_calls.is_empty() {
                 if let Some(last_tc) = msg.tool_calls.last() {
-                    let prev = ToolCall {
-                        tool: last_tc.name.clone(),
-                        args: last_tc.input.clone(),
-                        id: last_tc.id.clone(),
-                    };
-                    if streaming::are_tool_calls_duplicate(&prev, tool_call) {
-                        return Some("DUP IN MSG".to_string());
+                    // When both tool calls have non-empty IDs from native providers
+                    // (e.g. Anthropic "toolu_*"), each API invocation gets a unique ID.
+                    // Different IDs mean distinct invocations — not duplicates.
+                    // This is critical for polling tools like research_status that are
+                    // called repeatedly with identical arguments across turns.
+                    if !last_tc.id.is_empty() && !tool_call.id.is_empty() {
+                        if last_tc.id == tool_call.id {
+                            return Some("DUP IN MSG".to_string());
+                        }
+                        // Different IDs = different invocations, not a duplicate
+                    } else {
+                        // Fallback for JSON-based tool calls (embedded models) where
+                        // IDs are auto-generated and not meaningful for dedup.
+                        let prev = ToolCall {
+                            tool: last_tc.name.clone(),
+                            args: last_tc.input.clone(),
+                            id: last_tc.id.clone(),
+                        };
+                        if streaming::are_tool_calls_duplicate(&prev, tool_call) {
+                            return Some("DUP IN MSG".to_string());
+                        }
                     }
                 }
                 // Only check the most recent assistant message
@@ -2280,6 +2297,12 @@ Skip if nothing new. Be brief."#;
             // Create fresh iteration state for this streaming iteration
             let mut iter = streaming::IterationState::new();
 
+            // Snapshot history length before this iteration. Used by DUP IN MSG
+            // detection to avoid comparing against messages added during this
+            // iteration's own tool executions (which would false-positive on
+            // multi-tool responses where the model issues the same tool twice).
+            let history_len_before_iteration = self.context_window.conversation_history.len();
+
             while let Some(chunk_result) = stream.next().await {
                 match chunk_result {
                     Ok(chunk) => {
@@ -2356,9 +2379,19 @@ Skip if nothing new. Be brief."#;
                         // Always process all tool calls - they will be executed after stream ends
 
                         // De-duplicate tool calls (sequential duplicates in chunk + duplicates from previous message)
+                        let last_executed_in_iter = iter.last_executed_tool.clone();
                         let deduplicated_tools =
                             streaming::deduplicate_tool_calls(completed_tools, |tc| {
-                                self.check_duplicate_in_previous_message(tc)
+                                // First check against the last tool executed in this
+                                // iteration (catches duplicates across chunks within
+                                // the same streaming response).
+                                if let Some(ref last) = last_executed_in_iter {
+                                    if streaming::are_tool_calls_duplicate(last, tc) {
+                                        return Some("DUP IN ITER".to_string());
+                                    }
+                                }
+                                // Then check against messages from before this iteration
+                                self.check_duplicate_in_previous_message(tc, history_len_before_iteration)
                             });
 
                         // Process each tool call
@@ -2640,6 +2673,7 @@ Skip if nothing new. Be brief."#;
                             // 2. At the end when no tools were executed (handled in the "no tool executed" branch)
 
                             iter.tool_executed = true;
+                            iter.last_executed_tool = Some(tool_call.clone());
                             state.any_tool_executed = true; // Track across all iterations
 
                             // Reset the JSON tool call filter state after each tool execution

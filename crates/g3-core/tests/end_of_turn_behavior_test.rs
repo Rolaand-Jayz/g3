@@ -118,6 +118,13 @@ mod timing_footer {
 mod duplicate_detection {
     use super::*;
 
+    fn make_tool_call_with_id(tool: &str, args: serde_json::Value, id: &str) -> ToolCall {
+        ToolCall {
+            tool: tool.to_string(),
+            args,
+            id: id.to_string(),
+        }
+    }
     fn make_tool_call(tool: &str, args: serde_json::Value) -> ToolCall {
         ToolCall {
             tool: tool.to_string(),
@@ -187,6 +194,48 @@ mod duplicate_detection {
         });
         let tc1 = make_tool_call("code_search", args1);
         let tc2 = make_tool_call("code_search", args2);
+
+        assert!(!are_tool_calls_duplicate(&tc1, &tc2));
+    }
+
+    // =========================================================================
+    // ID-ignorant deduplication tests (are_tool_calls_duplicate is name+args only)
+    // ID-aware cross-message dedup lives in check_duplicate_in_previous_message()
+    // and is tested via integration tests in mock_provider_integration_test.rs
+    // =========================================================================
+
+    /// Test: are_tool_calls_duplicate ignores IDs — same name+args = duplicate
+    /// regardless of ID. The ID-aware logic is in check_duplicate_in_previous_message.
+    #[test]
+    fn test_different_ids_same_args_still_duplicate_at_chunk_level() {
+        let tc1 = make_tool_call_with_id(
+            "research_status",
+            serde_json::json!({}),
+            "toolu_01ABC",
+        );
+        let tc2 = make_tool_call_with_id(
+            "research_status",
+            serde_json::json!({}),
+            "toolu_01DEF",
+        );
+
+        // Same name+args = duplicate (IDs are ignored at this level)
+        assert!(are_tool_calls_duplicate(&tc1, &tc2));
+    }
+
+    /// Test: Different IDs with different args are NOT duplicates.
+    #[test]
+    fn test_different_ids_different_args_not_duplicate() {
+        let tc1 = make_tool_call_with_id(
+            "research_status",
+            serde_json::json!({"research_id": "r_123"}),
+            "toolu_01ABC",
+        );
+        let tc2 = make_tool_call_with_id(
+            "research_status",
+            serde_json::json!({"research_id": "r_456"}),
+            "toolu_01DEF",
+        );
 
         assert!(!are_tool_calls_duplicate(&tc1, &tc2));
     }
