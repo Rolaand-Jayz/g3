@@ -397,25 +397,17 @@ pub fn verify_envelope(session_id: &str, working_dir: &Path) -> String {
         }
     }
 
-    // Return a summary for the tool output
-    // NOTE: The token value is intentionally NOT included in the output
-    // returned to the LLM. It exists only in the envelope.yaml file.
-    let summary = if result.failed_count == 0 {
+    // Summary for tool output (token value intentionally omitted — LLM must not see it)
+    let total = result.passed_count + result.failed_count;
+    if result.failed_count == 0 {
         format!(
-            "\n✅ Invariant verification: {}/{} passed\n",
-            result.passed_count,
-            result.passed_count + result.failed_count,
+            "\n✅ Invariant verification: {}/{} passed\n", result.passed_count, total,
         )
     } else {
         format!(
-            "\n⚠️  Invariant verification: {}/{} passed, {} failed\n",
-            result.passed_count,
-            result.passed_count + result.failed_count,
-            result.failed_count,
+            "\n⚠️  Invariant verification: {}/{} passed, {} failed\n", result.passed_count, total, result.failed_count,
         )
-    };
-
-    summary
+    }
 }
 
 /// Stamp an envelope with a verification token and re-write it to disk.
@@ -432,17 +424,13 @@ fn stamp_envelope(
 ) -> Result<()> {
     let key = get_or_create_verification_key()?;
 
-    // Compute token over the original envelope (without any previous verified field)
+    // Compute token over the envelope without any previous verified field
     let mut clean_envelope = envelope.clone();
     clean_envelope.verified = None;
     let token = mint_token(&key, &clean_envelope, rulespec);
 
-    // Set the verified field and re-write
-    let mut stamped = envelope.clone();
-    stamped.verified = Some(token);
-    write_envelope(session_id, &stamped)?;
-
-    Ok(())
+    clean_envelope.verified = Some(token);
+    write_envelope(session_id, &clean_envelope)
 }
 
 // ============================================================================

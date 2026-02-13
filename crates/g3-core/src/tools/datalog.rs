@@ -425,7 +425,161 @@ pub fn execute_rules(
     }
 }
 
-/// Evaluate a single predicate using the fact lookup.
+// ── Predicate evaluation helpers ────────────────────────────────────────
+// Each returns (passed: bool, reason: String) for a specific rule type.
+
+/// Exists / NotExists: check whether the claim has any values.
+/// `expect_present = true` → Exists; `false` → NotExists.
+fn eval_existence(claim_values: Option<&HashSet<&str>>, expect_present: bool) -> (bool, String) {
+    let has_values = claim_values.map_or(false, |v| !v.is_empty());
+    if expect_present == has_values {
+        if has_values {
+            (true, "Value exists".into())
+        } else {
+            (true, "Value does not exist as expected".into())
+        }
+    } else if expect_present {
+        (false, "Value does not exist".into())
+    } else {
+        (false, "Value exists but should not".into())
+    }
+}
+
+/// Contains / NotContains: check whether a specific value is among the claim's facts.
+/// `expect_present = true` → Contains; `false` → NotContains.
+fn eval_membership(
+    claim_values: Option<&HashSet<&str>>,
+    pred: &CompiledPredicate,
+    expect_present: bool,
+) -> (bool, String) {
+    let expected = pred.expected_value.as_deref().unwrap_or("");
+    match claim_values {
+        Some(values) => {
+            let found = values.contains(expected);
+            if expect_present {
+                if found {
+                    (true, format!("Contains '{}'", expected))
+                } else {
+                    (false, format!("Does not contain '{}'", expected))
+                }
+            } else if found {
+                (false, format!("Contains '{}' but should not", expected))
+            } else {
+                (true, format!("Does not contain '{}'", expected))
+            }
+        }
+        None if expect_present => (false, format!("Claim '{}' has no values", pred.claim_name)),
+        None => (true, format!("Claim '{}' has no values (not_contains passes vacuously)", pred.claim_name)),
+    }
+}
+
+/// Equals: exactly one value must match the expected string.
+fn eval_equals(claim_values: Option<&HashSet<&str>>, pred: &CompiledPredicate) -> (bool, String) {
+    let expected = pred.expected_value.as_deref().unwrap_or("");
+    let Some(values) = claim_values else {
+        return (false, format!("Claim '{}' has no values", pred.claim_name));
+    };
+    if values.len() == 1 && values.contains(expected) {
+        (true, format!("Equals '{}'", expected))
+    } else if values.len() > 1 {
+        (false, format!("Multiple values found, expected single value '{}'", expected))
+    } else {
+        let actual = values.iter().next().copied().unwrap_or("<none>");
+        (false, format!("Expected '{}', got '{}'", expected, actual))
+    }
+}
+
+/// MinLength / MaxLength: compare the `__length` fact against a threshold.
+fn eval_length(
+    fact_lookup: &HashMap<&str, HashSet<&str>>,
+    pred: &CompiledPredicate,
+    cmp: impl Fn(usize, usize) -> bool,
+    pass_op: &str,
+    fail_op: &str,
+    label: &str,
+) -> (bool, String) {
+    let expected: usize = pred.expected_value.as_deref()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let length_key = format!("{}.__length", pred.claim_name);
+    let length: usize = fact_lookup
+        .get(length_key.as_str())
+        .and_then(|v| v.iter().next())
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    if cmp(length, expected) {
+        (true, format!("Length {} {} {}", length, pass_op, expected))
+    } else {
+        (false, format!("Length {} {} {} ({})", length, fail_op, expected, label))
+    }
+}
+
+/// GreaterThan / LessThan: parse the first claim value as f64 and compare.
+fn eval_numeric_cmp(
+    claim_values: Option<&HashSet<&str>>,
+    pred: &CompiledPredicate,
+    cmp: impl Fn(f64, f64) -> bool,
+    op: &str,
+) -> (bool, String) {
+    let expected: f64 = pred.expected_value.as_deref()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0.0);
+    let Some(values) = claim_values else {
+        return (false, format!("Claim '{}' has no values", pred.claim_name));
+    };
+    match values.iter().next().and_then(|s| s.parse::<f64>().ok()) {
+        Some(actual) if cmp(actual, expected) => (true, format!("{} {} {}", actual, op, expected)),
+        Some(actual) => (false, format!("{} is not {} {}", actual, op, expected)),
+        None => (false, "Value is not a number".into()),
+    }
+}
+
+/// Matches: check if any claim value matches a regex pattern.
+fn eval_matches(claim_values: Option<&HashSet<&str>>, pred: &CompiledPredicate) -> (bool, String) {
+    let pattern = pred.expected_value.as_deref().unwrap_or("");
+    let regex = match regex::Regex::new(pattern) {
+        Ok(r) => r,
+        Err(e) => return (false, format!("Invalid regex: {}", e)),
+    };
+    let Some(values) = claim_values else {
+        return (false, format!("Claim '{}' has no values", pred.claim_name));
+    };
+    if values.iter().any(|v| regex.is_match(v)) {
+        (true, format!("Matches pattern '{}'", pattern))
+    } else {
+        (false, format!("No value matches pattern '{}'", pattern))
+    }
+}
+
+/// AnyOf / NoneOf: parse the expected value as a bracketed set and check membership.
+/// `expect_in_set = true` → AnyOf (pass if value in set); `false` → NoneOf.
+fn eval_set_membership(
+    claim_values: Option<&HashSet<&str>>,
+    pred: &CompiledPredicate,
+    expect_in_set: bool,
+) -> (bool, String) {
+    let set: Vec<&str> = pred.expected_value.as_deref()
+        .map(|v| v.trim_matches(|c| c == '[' || c == ']').split(", ").collect())
+        .unwrap_or_default();
+    let Some(values) = claim_values else {
+        return if expect_in_set {
+            (false, format!("Claim '{}' has no values", pred.claim_name))
+        } else {
+            (true, format!("Claim '{}' has no values (none_of passes vacuously)", pred.claim_name))
+        };
+    };
+    let found = values.iter().any(|v| set.contains(v));
+    if expect_in_set {
+        if found { (true, "Value is in allowed set".into()) }
+        else { (false, "Value is not in allowed set".into()) }
+    } else if found {
+        (false, "Value is in forbidden set".into())
+    } else {
+        (true, "Value is not in forbidden set".into())
+    }
+}
+
+/// Evaluate a single predicate against the fact lookup table.
 fn evaluate_predicate_datalog(
     pred: &CompiledPredicate,
     fact_lookup: &HashMap<&str, HashSet<&str>>,
@@ -433,202 +587,18 @@ fn evaluate_predicate_datalog(
     let claim_values = fact_lookup.get(pred.claim_name.as_str());
     
     let (passed, reason) = match pred.rule {
-        PredicateRule::Exists => {
-            if claim_values.is_some() && !claim_values.unwrap().is_empty() {
-                (true, "Value exists".to_string())
-            } else {
-                (false, "Value does not exist".to_string())
-            }
-        }
-        PredicateRule::NotExists => {
-            if claim_values.is_none() || claim_values.unwrap().is_empty() {
-                (true, "Value does not exist as expected".to_string())
-            } else {
-                (false, "Value exists but should not".to_string())
-            }
-        }
-        PredicateRule::Contains => {
-            let expected = pred.expected_value.as_deref().unwrap_or("");
-            if let Some(values) = claim_values {
-                if values.contains(expected) {
-                    (true, format!("Contains '{}'", expected))
-                } else {
-                    (false, format!("Does not contain '{}'", expected))
-                }
-            } else {
-                (false, format!("Claim '{}' has no values", pred.claim_name))
-            }
-        }
-        PredicateRule::Equals => {
-            let expected = pred.expected_value.as_deref().unwrap_or("");
-            if let Some(values) = claim_values {
-                if values.len() == 1 && values.contains(expected) {
-                    (true, format!("Equals '{}'", expected))
-                } else if values.len() > 1 {
-                    (false, format!("Multiple values found, expected single value '{}'", expected))
-                } else {
-                    let actual = values.iter().next().map(|s| *s).unwrap_or("<none>");
-                    (false, format!("Expected '{}', got '{}'", expected, actual))
-                }
-            } else {
-                (false, format!("Claim '{}' has no values", pred.claim_name))
-            }
-        }
-        PredicateRule::MinLength => {
-            let expected: usize = pred
-                .expected_value
-                .as_deref()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0);
-            
-            // Check the __length fact
-            let length_claim = format!("{}.__length", pred.claim_name);
-            let length = fact_lookup
-                .get(length_claim.as_str())
-                .and_then(|v| v.iter().next())
-                .and_then(|s| s.parse::<usize>().ok())
-                .unwrap_or(0);
-            
-            if length >= expected {
-                (true, format!("Length {} >= {}", length, expected))
-            } else {
-                (false, format!("Length {} < {} (minimum)", length, expected))
-            }
-        }
-        PredicateRule::MaxLength => {
-            let expected: usize = pred
-                .expected_value
-                .as_deref()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(usize::MAX);
-            
-            let length_claim = format!("{}.__length", pred.claim_name);
-            let length = fact_lookup
-                .get(length_claim.as_str())
-                .and_then(|v| v.iter().next())
-                .and_then(|s| s.parse::<usize>().ok())
-                .unwrap_or(0);
-            
-            if length <= expected {
-                (true, format!("Length {} <= {}", length, expected))
-            } else {
-                (false, format!("Length {} > {} (maximum)", length, expected))
-            }
-        }
-        PredicateRule::GreaterThan => {
-            let expected: f64 = pred
-                .expected_value
-                .as_deref()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0.0);
-            
-            if let Some(values) = claim_values {
-                if let Some(actual) = values.iter().next().and_then(|s| s.parse::<f64>().ok()) {
-                    if actual > expected {
-                        (true, format!("{} > {}", actual, expected))
-                    } else {
-                        (false, format!("{} is not > {}", actual, expected))
-                    }
-                } else {
-                    (false, "Value is not a number".to_string())
-                }
-            } else {
-                (false, format!("Claim '{}' has no values", pred.claim_name))
-            }
-        }
-        PredicateRule::LessThan => {
-            let expected: f64 = pred
-                .expected_value
-                .as_deref()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0.0);
-            
-            if let Some(values) = claim_values {
-                if let Some(actual) = values.iter().next().and_then(|s| s.parse::<f64>().ok()) {
-                    if actual < expected {
-                        (true, format!("{} < {}", actual, expected))
-                    } else {
-                        (false, format!("{} is not < {}", actual, expected))
-                    }
-                } else {
-                    (false, "Value is not a number".to_string())
-                }
-            } else {
-                (false, format!("Claim '{}' has no values", pred.claim_name))
-            }
-        }
-        PredicateRule::Matches => {
-            let pattern = pred.expected_value.as_deref().unwrap_or("");
-            let regex = match regex::Regex::new(pattern) {
-                Ok(r) => r,
-                Err(e) => {
-                    return DatalogPredicateResult {
-                        id: pred.id,
-                        claim_name: pred.claim_name.clone(),
-                        rule: pred.rule.clone(),
-                        expected_value: pred.expected_value.clone(),
-                        passed: false,
-                        reason: format!("Invalid regex: {}", e),
-                        source: pred.source,
-                        notes: pred.notes.clone(),
-                    };
-                }
-            };
-            
-            if let Some(values) = claim_values {
-                if values.iter().any(|v| regex.is_match(v)) {
-                    (true, format!("Matches pattern '{}'", pattern))
-                } else {
-                    (false, format!("No value matches pattern '{}'", pattern))
-                }
-            } else {
-                (false, format!("Claim '{}' has no values", pred.claim_name))
-            }
-        }
-        PredicateRule::NotContains => {
-            let expected = pred.expected_value.as_deref().unwrap_or("");
-            if let Some(values) = claim_values {
-                if values.contains(expected) {
-                    (false, format!("Contains '{}' but should not", expected))
-                } else {
-                    (true, format!("Does not contain '{}'", expected))
-                }
-            } else {
-                (true, format!("Claim '{}' has no values (not_contains passes vacuously)", pred.claim_name))
-            }
-        }
-        PredicateRule::AnyOf => {
-            let expected_set: Vec<&str> = pred.expected_value.as_deref()
-                .map(|v| v.trim_matches(|c| c == '[' || c == ']')
-                    .split(", ")
-                    .collect())
-                .unwrap_or_default();
-            if let Some(values) = claim_values {
-                if values.iter().any(|v| expected_set.contains(v)) {
-                    (true, format!("Value is in allowed set"))
-                } else {
-                    (false, format!("Value is not in allowed set"))
-                }
-            } else {
-                (false, format!("Claim '{}' has no values", pred.claim_name))
-            }
-        }
-        PredicateRule::NoneOf => {
-            let forbidden_set: Vec<&str> = pred.expected_value.as_deref()
-                .map(|v| v.trim_matches(|c| c == '[' || c == ']')
-                    .split(", ")
-                    .collect())
-                .unwrap_or_default();
-            if let Some(values) = claim_values {
-                if values.iter().any(|v| forbidden_set.contains(v)) {
-                    (false, format!("Value is in forbidden set"))
-                } else {
-                    (true, format!("Value is not in forbidden set"))
-                }
-            } else {
-                (true, format!("Claim '{}' has no values (none_of passes vacuously)", pred.claim_name))
-            }
-        }
+        PredicateRule::Exists => eval_existence(claim_values, true),
+        PredicateRule::NotExists => eval_existence(claim_values, false),
+        PredicateRule::Contains => eval_membership(claim_values, pred, true),
+        PredicateRule::NotContains => eval_membership(claim_values, pred, false),
+        PredicateRule::Equals => eval_equals(claim_values, pred),
+        PredicateRule::MinLength => eval_length(fact_lookup, pred, |len, exp| len >= exp, ">=", "<", "minimum"),
+        PredicateRule::MaxLength => eval_length(fact_lookup, pred, |len, exp| len <= exp, "<=", ">", "maximum"),
+        PredicateRule::GreaterThan => eval_numeric_cmp(claim_values, pred, |a, e| a > e, ">"),
+        PredicateRule::LessThan => eval_numeric_cmp(claim_values, pred, |a, e| a < e, "<"),
+        PredicateRule::Matches => eval_matches(claim_values, pred),
+        PredicateRule::AnyOf => eval_set_membership(claim_values, pred, true),
+        PredicateRule::NoneOf => eval_set_membership(claim_values, pred, false),
     };
 
     DatalogPredicateResult {
@@ -656,6 +626,36 @@ fn escape_datalog_string(s: &str) -> String {
         .replace('\n', "\\n")
         .replace('\r', "\\r")
         .replace('\t', "\\t")
+}
+
+/// Generate the Soufflé rule body for a single predicate.
+///
+/// Returns the clause after `predicate_pass(id) :- `.
+fn rule_body_for_predicate(rule: &PredicateRule, claim: &str, expected: &str) -> String {
+    match rule {
+        PredicateRule::Exists =>
+            format!("claim_value(\"{}\", _)", claim),
+        PredicateRule::NotExists =>
+            format!("!claim_value(\"{}\", _)", claim),
+        PredicateRule::Equals | PredicateRule::Contains =>
+            format!("claim_value(\"{}\", \"{}\")", claim, expected),
+        PredicateRule::NotContains =>
+            format!("!claim_value(\"{}\", \"{}\")", claim, expected),
+        PredicateRule::GreaterThan =>
+            format!("claim_value(\"{}\", V), to_number(V, N), N > {}", claim, expected),
+        PredicateRule::LessThan =>
+            format!("claim_value(\"{}\", V), to_number(V, N), N < {}", claim, expected),
+        PredicateRule::MinLength =>
+            format!("claim_length(\"{}\", N), N >= {}", claim, expected),
+        PredicateRule::MaxLength =>
+            format!("claim_length(\"{}\", N), N <= {}", claim, expected),
+        PredicateRule::Matches =>
+            format!("claim_value(\"{}\", V), match(\"{}\", V)", claim, expected),
+        PredicateRule::AnyOf =>
+            format!("claim_value(\"{}\", V), any_of(\"{}\", V)", claim, expected),
+        PredicateRule::NoneOf =>
+            format!("!claim_value(\"{}\", V), none_of(\"{}\", V)", claim, expected),
+    }
 }
 
 /// Format a compiled rulespec and extracted facts as a datalog program.
@@ -739,83 +739,8 @@ pub fn format_datalog_program(
             pred.notes.as_deref().map(|n| format!("  -- {}", n)).unwrap_or_default(),
         ));
 
-        match pred.rule {
-            PredicateRule::Exists => {
-                out.push_str(&format!(
-                    "predicate_pass({}) :- claim_value(\"{}\", _).\n",
-                    id, claim,
-                ));
-            }
-            PredicateRule::NotExists => {
-                // Pass when no matching fact exists
-                out.push_str(&format!(
-                    "predicate_pass({}) :- !claim_value(\"{}\", _).\n",
-                    id, claim,
-                ));
-            }
-            PredicateRule::Equals => {
-                out.push_str(&format!(
-                    "predicate_pass({}) :- claim_value(\"{}\", \"{}\").\n",
-                    id, claim, expected,
-                ));
-            }
-            PredicateRule::Contains => {
-                out.push_str(&format!(
-                    "predicate_pass({}) :- claim_value(\"{}\", \"{}\").\n",
-                    id, claim, expected,
-                ));
-            }
-            PredicateRule::GreaterThan => {
-                out.push_str(&format!(
-                    "predicate_pass({}) :- claim_value(\"{}\", V), to_number(V, N), N > {}.\n",
-                    id, claim, expected,
-                ));
-            }
-            PredicateRule::LessThan => {
-                out.push_str(&format!(
-                    "predicate_pass({}) :- claim_value(\"{}\", V), to_number(V, N), N < {}.\n",
-                    id, claim, expected,
-                ));
-            }
-            PredicateRule::MinLength => {
-                out.push_str(&format!(
-                    "predicate_pass({}) :- claim_length(\"{}\", N), N >= {}.\n",
-                    id, claim, expected,
-                ));
-            }
-            PredicateRule::MaxLength => {
-                out.push_str(&format!(
-                    "predicate_pass({}) :- claim_length(\"{}\", N), N <= {}.\n",
-                    id, claim, expected,
-                ));
-            }
-            PredicateRule::Matches => {
-                // Regex matching expressed as a match functor
-                out.push_str(&format!(
-                    "predicate_pass({}) :- claim_value(\"{}\", V), match(\"{}\", V).\n",
-                    id, claim, expected,
-                ));
-            }
-            PredicateRule::NotContains => {
-                out.push_str(&format!(
-                    "predicate_pass({}) :- !claim_value(\"{}\", \"{}\").\n",
-                    id, claim, expected,
-                ));
-            }
-            PredicateRule::AnyOf => {
-                // any_of: pass if claim value matches any element in the set
-                out.push_str(&format!(
-                    "predicate_pass({}) :- claim_value(\"{}\", V), any_of(\"{}\", V).\n",
-                    id, claim, expected,
-                ));
-            }
-            PredicateRule::NoneOf => {
-                out.push_str(&format!(
-                    "predicate_pass({}) :- !claim_value(\"{}\", V), none_of(\"{}\", V).\n",
-                    id, claim, expected,
-                ));
-            }
-        }
+        let body = rule_body_for_predicate(&pred.rule, &claim, &expected);
+        out.push_str(&format!("predicate_pass({}) :- {}.\n", id, body));
 
         // Derive failure as the negation of pass
         out.push_str(&format!(
@@ -827,7 +752,6 @@ pub fn format_datalog_program(
 
     out
 }
-// ============================================================================
 // ============================================================================
 // Formatting
 // ============================================================================

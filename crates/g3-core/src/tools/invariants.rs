@@ -559,234 +559,139 @@ pub fn evaluate_predicate(
     selected_values: &[YamlValue],
 ) -> PredicateResult {
     match predicate.rule {
-        PredicateRule::Exists => {
-            // Filter out null values — null means "absent"
-            let non_null: Vec<_> = selected_values.iter()
-                .filter(|v| !v.is_null())
-                .collect();
-            if non_null.is_empty() {
-                PredicateResult::fail("Value does not exist")
+        PredicateRule::Exists => eval_yaml_existence(selected_values, true),
+        PredicateRule::NotExists => eval_yaml_existence(selected_values, false),
+        PredicateRule::Contains => eval_yaml_containment(predicate, selected_values, true),
+        PredicateRule::NotContains => eval_yaml_containment(predicate, selected_values, false),
+        PredicateRule::Equals => eval_yaml_equals(predicate, selected_values),
+        PredicateRule::MinLength => eval_yaml_length(predicate, selected_values, |len, n| len >= n, "min"),
+        PredicateRule::MaxLength => eval_yaml_length(predicate, selected_values, |len, n| len <= n, "max"),
+        PredicateRule::GreaterThan => eval_yaml_numeric(predicate, selected_values, |v, t| v > t, ">"),
+        PredicateRule::LessThan => eval_yaml_numeric(predicate, selected_values, |v, t| v < t, "<"),
+        PredicateRule::Matches => eval_yaml_matches(predicate, selected_values),
+        PredicateRule::AnyOf => eval_yaml_set(predicate, selected_values, true),
+        PredicateRule::NoneOf => eval_yaml_set(predicate, selected_values, false),
+    }
+}
+
+// ── Per-rule evaluation helpers ─────────────────────────────────────────
+
+/// Exists / NotExists: any non-null value counts as "present".
+fn eval_yaml_existence(values: &[YamlValue], expect_present: bool) -> PredicateResult {
+    let has_non_null = values.iter().any(|v| !v.is_null());
+    match (expect_present, has_non_null) {
+        (true, true) => PredicateResult::pass("Value exists"),
+        (true, false) => PredicateResult::fail("Value does not exist"),
+        (false, false) => PredicateResult::pass("Value does not exist as expected"),
+        (false, true) => PredicateResult::fail("Value exists but should not"),
+    }
+}
+
+/// Contains / NotContains: search selected values using `value_contains`.
+fn eval_yaml_containment(pred: &Predicate, values: &[YamlValue], expect_present: bool) -> PredicateResult {
+    let Some(target) = &pred.value else {
+        let rule_name = if expect_present { "contains" } else { "not_contains" };
+        return PredicateResult::fail(format!("No value specified for {}", rule_name));
+    };
+    let found = values.iter().any(|v| value_contains(v, target));
+    let display = yaml_to_display(target);
+    match (expect_present, found) {
+        (true, true) => PredicateResult::pass(format!("Value contains {:?}", display)),
+        (true, false) => PredicateResult::fail(format!("Value does not contain {:?}", display)),
+        (false, false) => PredicateResult::pass(format!("Value does not contain {:?}", display)),
+        (false, true) => PredicateResult::fail(format!("Value contains {:?} but should not", display)),
+    }
+}
+
+fn eval_yaml_equals(pred: &Predicate, values: &[YamlValue]) -> PredicateResult {
+    let Some(target) = &pred.value else {
+        return PredicateResult::fail("No value specified for equals");
+    };
+    if values.len() != 1 {
+        return PredicateResult::fail(format!("Expected single value for equals, got {}", values.len()));
+    }
+    if &values[0] == target {
+        PredicateResult::pass("Values are equal")
+    } else {
+        PredicateResult::fail(format!("Values not equal: {:?} != {:?}", yaml_to_display(&values[0]), yaml_to_display(target)))
+    }
+}
+
+/// MinLength / MaxLength: find the first Sequence and compare its length.
+fn eval_yaml_length(pred: &Predicate, values: &[YamlValue], cmp: fn(usize, usize) -> bool, label: &str) -> PredicateResult {
+    let threshold = match &pred.value {
+        Some(YamlValue::Number(n)) => n.as_u64().unwrap_or(0) as usize,
+        _ => return PredicateResult::fail(format!("{}_length requires a numeric value", label)),
+    };
+    for value in values {
+        if let YamlValue::Sequence(seq) = value {
+            return if cmp(seq.len(), threshold) {
+                PredicateResult::pass(format!("Array has {} elements ({}: {})", seq.len(), label, threshold))
             } else {
-                PredicateResult::pass("Value exists")
-            }
+                PredicateResult::fail(format!("Array has {} elements ({}: {})", seq.len(), label, threshold))
+            };
         }
-        PredicateRule::NotExists => {
-            // Filter out null values — null means "absent"
-            let non_null: Vec<_> = selected_values.iter()
-                .filter(|v| !v.is_null())
-                .collect();
-            if non_null.is_empty() {
-                PredicateResult::pass("Value does not exist as expected")
+    }
+    PredicateResult::fail("Value is not an array")
+}
+
+/// GreaterThan / LessThan: find the first Number and compare.
+fn eval_yaml_numeric(pred: &Predicate, values: &[YamlValue], cmp: fn(f64, f64) -> bool, op: &str) -> PredicateResult {
+    let target = match &pred.value {
+        Some(YamlValue::Number(n)) => n.as_f64().unwrap_or(0.0),
+        _ => return PredicateResult::fail(format!("{} requires a numeric value", pred.rule)),
+    };
+    for value in values {
+        if let YamlValue::Number(n) = value {
+            let v = n.as_f64().unwrap_or(0.0);
+            return if cmp(v, target) {
+                PredicateResult::pass(format!("{} {} {}", v, op, target))
             } else {
-                PredicateResult::fail("Value exists but should not")
+                PredicateResult::fail(format!("{} is not {} {}", v, op, target))
+            };
+        }
+    }
+    PredicateResult::fail("Value is not a number")
+}
+
+fn eval_yaml_matches(pred: &Predicate, values: &[YamlValue]) -> PredicateResult {
+    let Some(YamlValue::String(pattern)) = &pred.value else {
+        return PredicateResult::fail("matches requires a string pattern");
+    };
+    let regex = match regex::Regex::new(pattern) {
+        Ok(r) => r,
+        Err(e) => return PredicateResult::fail(format!("Invalid regex: {}", e)),
+    };
+    for value in values {
+        if let YamlValue::String(s) = value {
+            if regex.is_match(s) {
+                return PredicateResult::pass(format!("'{}' matches pattern", s));
             }
         }
-        PredicateRule::Contains => {
-            let target = match &predicate.value {
-                Some(v) => v,
-                None => return PredicateResult::fail("No value specified for contains"),
-            };
-            
-            for value in selected_values {
-                if value_contains(value, target) {
-                    return PredicateResult::pass(format!(
-                        "Value contains {:?}",
-                        yaml_to_display(target)
-                    ));
-                }
-            }
-            PredicateResult::fail(format!(
-                "Value does not contain {:?}",
-                yaml_to_display(target)
-            ))
+    }
+    PredicateResult::fail(format!("No value matches pattern '{}'", pattern))
+}
+
+/// AnyOf / NoneOf: check if selected values are in (or not in) a set.
+fn eval_yaml_set(pred: &Predicate, values: &[YamlValue], expect_in_set: bool) -> PredicateResult {
+    let label = if expect_in_set { "any_of" } else { "none_of" };
+    let set = match &pred.value {
+        Some(YamlValue::Sequence(seq)) => seq,
+        Some(_) => return PredicateResult::fail(format!("{} requires an array value", label)),
+        None => return PredicateResult::fail(format!("No value specified for {}", label)),
+    };
+    let found = values.iter().any(|v| set.contains(v));
+    let set_display = set.iter().map(yaml_to_display).collect::<Vec<_>>().join(", ");
+    match (expect_in_set, found) {
+        (true, true) => {
+            let matched = values.iter().find(|v| set.contains(v)).unwrap();
+            PredicateResult::pass(format!("Value {:?} is in allowed set", yaml_to_display(matched)))
         }
-        PredicateRule::Equals => {
-            let target = match &predicate.value {
-                Some(v) => v,
-                None => return PredicateResult::fail("No value specified for equals"),
-            };
-            
-            if selected_values.len() != 1 {
-                return PredicateResult::fail(format!(
-                    "Expected single value for equals, got {}",
-                    selected_values.len()
-                ));
-            }
-            
-            if &selected_values[0] == target {
-                PredicateResult::pass("Values are equal")
-            } else {
-                PredicateResult::fail(format!(
-                    "Values not equal: {:?} != {:?}",
-                    yaml_to_display(&selected_values[0]),
-                    yaml_to_display(target)
-                ))
-            }
-        }
-        PredicateRule::MinLength => {
-            let min = match &predicate.value {
-                Some(YamlValue::Number(n)) => n.as_u64().unwrap_or(0) as usize,
-                _ => return PredicateResult::fail("min_length requires a numeric value"),
-            };
-            
-            for value in selected_values {
-                if let YamlValue::Sequence(seq) = value {
-                    if seq.len() >= min {
-                        return PredicateResult::pass(format!(
-                            "Array has {} elements (min: {})",
-                            seq.len(),
-                            min
-                        ));
-                    } else {
-                        return PredicateResult::fail(format!(
-                            "Array has {} elements (min: {})",
-                            seq.len(),
-                            min
-                        ));
-                    }
-                }
-            }
-            PredicateResult::fail("Value is not an array")
-        }
-        PredicateRule::MaxLength => {
-            let max = match &predicate.value {
-                Some(YamlValue::Number(n)) => n.as_u64().unwrap_or(0) as usize,
-                _ => return PredicateResult::fail("max_length requires a numeric value"),
-            };
-            
-            for value in selected_values {
-                if let YamlValue::Sequence(seq) = value {
-                    if seq.len() <= max {
-                        return PredicateResult::pass(format!(
-                            "Array has {} elements (max: {})",
-                            seq.len(),
-                            max
-                        ));
-                    } else {
-                        return PredicateResult::fail(format!(
-                            "Array has {} elements (max: {})",
-                            seq.len(),
-                            max
-                        ));
-                    }
-                }
-            }
-            PredicateResult::fail("Value is not an array")
-        }
-        PredicateRule::GreaterThan => {
-            let target = match &predicate.value {
-                Some(YamlValue::Number(n)) => n.as_f64().unwrap_or(0.0),
-                _ => return PredicateResult::fail("greater_than requires a numeric value"),
-            };
-            
-            for value in selected_values {
-                if let YamlValue::Number(n) = value {
-                    let v = n.as_f64().unwrap_or(0.0);
-                    if v > target {
-                        return PredicateResult::pass(format!("{} > {}", v, target));
-                    } else {
-                        return PredicateResult::fail(format!("{} is not > {}", v, target));
-                    }
-                }
-            }
-            PredicateResult::fail("Value is not a number")
-        }
-        PredicateRule::LessThan => {
-            let target = match &predicate.value {
-                Some(YamlValue::Number(n)) => n.as_f64().unwrap_or(0.0),
-                _ => return PredicateResult::fail("less_than requires a numeric value"),
-            };
-            
-            for value in selected_values {
-                if let YamlValue::Number(n) = value {
-                    let v = n.as_f64().unwrap_or(0.0);
-                    if v < target {
-                        return PredicateResult::pass(format!("{} < {}", v, target));
-                    } else {
-                        return PredicateResult::fail(format!("{} is not < {}", v, target));
-                    }
-                }
-            }
-            PredicateResult::fail("Value is not a number")
-        }
-        PredicateRule::Matches => {
-            let pattern = match &predicate.value {
-                Some(YamlValue::String(s)) => s,
-                _ => return PredicateResult::fail("matches requires a string pattern"),
-            };
-            
-            let regex = match regex::Regex::new(pattern) {
-                Ok(r) => r,
-                Err(e) => return PredicateResult::fail(format!("Invalid regex: {}", e)),
-            };
-            
-            for value in selected_values {
-                if let YamlValue::String(s) = value {
-                    if regex.is_match(s) {
-                        return PredicateResult::pass(format!("'{}' matches pattern", s));
-                    }
-                }
-            }
-            PredicateResult::fail(format!("No value matches pattern '{}'", pattern))
-        }
-        PredicateRule::NotContains => {
-            let target = match &predicate.value {
-                Some(v) => v,
-                None => return PredicateResult::fail("No value specified for not_contains"),
-            };
-            
-            for value in selected_values {
-                if value_contains(value, target) {
-                    return PredicateResult::fail(format!(
-                        "Value contains {:?} but should not",
-                        yaml_to_display(target)
-                    ));
-                }
-            }
-            PredicateResult::pass(format!(
-                "Value does not contain {:?}",
-                yaml_to_display(target)
-            ))
-        }
-        PredicateRule::AnyOf => {
-            let allowed = match &predicate.value {
-                Some(YamlValue::Sequence(seq)) => seq,
-                Some(_) => return PredicateResult::fail("any_of requires an array value"),
-                None => return PredicateResult::fail("No value specified for any_of"),
-            };
-            
-            for value in selected_values {
-                if allowed.contains(value) {
-                    return PredicateResult::pass(format!(
-                        "Value {:?} is in allowed set",
-                        yaml_to_display(value)
-                    ));
-                }
-            }
-            PredicateResult::fail(format!(
-                "Value is not in allowed set [{}]",
-                allowed.iter().map(yaml_to_display).collect::<Vec<_>>().join(", ")
-            ))
-        }
-        PredicateRule::NoneOf => {
-            let forbidden = match &predicate.value {
-                Some(YamlValue::Sequence(seq)) => seq,
-                Some(_) => return PredicateResult::fail("none_of requires an array value"),
-                None => return PredicateResult::fail("No value specified for none_of"),
-            };
-            
-            for value in selected_values {
-                if forbidden.contains(value) {
-                    return PredicateResult::fail(format!(
-                        "Value {:?} is in forbidden set",
-                        yaml_to_display(value)
-                    ));
-                }
-            }
-            PredicateResult::pass(format!(
-                "Value is not in forbidden set [{}]",
-                forbidden.iter().map(yaml_to_display).collect::<Vec<_>>().join(", ")
-            ))
+        (true, false) => PredicateResult::fail(format!("Value is not in allowed set [{}]", set_display)),
+        (false, false) => PredicateResult::pass(format!("Value is not in forbidden set [{}]", set_display)),
+        (false, true) => {
+            let matched = values.iter().find(|v| set.contains(v)).unwrap();
+            PredicateResult::fail(format!("Value {:?} is in forbidden set", yaml_to_display(matched)))
         }
     }
 }
