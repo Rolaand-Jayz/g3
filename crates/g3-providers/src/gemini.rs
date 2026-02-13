@@ -77,14 +77,7 @@ impl GeminiProvider {
         max_tokens: Option<u32>,
         temperature: Option<f32>,
     ) -> Result<Self> {
-        Ok(Self {
-            client: Client::new(),
-            api_key,
-            model: model.unwrap_or_else(|| "gemini-2.0-flash".to_string()),
-            max_tokens: max_tokens.unwrap_or(16384),
-            temperature: temperature.unwrap_or(0.1),
-            name: "gemini".to_string(),
-        })
+        Self::new_with_name("gemini".to_string(), api_key, model, max_tokens, temperature)
     }
 
     pub fn new_with_name(

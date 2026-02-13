@@ -116,38 +116,7 @@ fn is_position_in_fence_ranges(pos: usize, ranges: &[(usize, usize)]) -> bool {
 // JSON Parsing Utilities
 // ============================================================================
 
-/// Find the end byte index of a complete JSON object, or None if incomplete.
-fn find_json_object_end(text: &str) -> Option<usize> {
-    let mut brace_count = 0;
-    let mut in_string = false;
-    let mut escape_next = false;
-    let mut found_start = false;
-
-    for (i, ch) in text.char_indices() {
-        if escape_next {
-            escape_next = false;
-            continue;
-        }
-
-        match ch {
-            '\\' => escape_next = true,
-            '"' => in_string = !in_string,
-            '{' if !in_string => {
-                brace_count += 1;
-                found_start = true;
-            }
-            '}' if !in_string => {
-                brace_count -= 1;
-                if brace_count == 0 && found_start {
-                    return Some(i);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    None
-}
+use crate::utils::find_json_object_end;
 
 /// Check if a partial JSON tool call has been invalidated.
 ///

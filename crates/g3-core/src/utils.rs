@@ -545,6 +545,49 @@ pub fn fix_mixed_quotes_in_json(json_str: &str) -> String {
     result
 }
 
+// ============================================================================
+// JSON Utilities
+// ============================================================================
+
+/// Find the end byte-index of a complete JSON object starting at the beginning of `text`.
+///
+/// Tracks brace nesting and string escaping to find the matching `}` for the
+/// first `{`. Returns `None` if the JSON is incomplete or no `{` is found.
+///
+/// This is the single canonical implementation — used by streaming_parser,
+/// context_window thinning, and ACD fragment parsing.
+pub fn find_json_object_end(text: &str) -> Option<usize> {
+    let mut brace_count = 0;
+    let mut in_string = false;
+    let mut escape_next = false;
+    let mut found_start = false;
+
+    for (i, ch) in text.char_indices() {
+        if escape_next {
+            escape_next = false;
+            continue;
+        }
+
+        match ch {
+            '\\' => escape_next = true,
+            '"' => in_string = !in_string,
+            '{' if !in_string => {
+                brace_count += 1;
+                found_start = true;
+            }
+            '}' if !in_string => {
+                brace_count -= 1;
+                if brace_count == 0 && found_start {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

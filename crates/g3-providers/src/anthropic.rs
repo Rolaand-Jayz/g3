@@ -145,26 +145,7 @@ impl AnthropicProvider {
         enable_1m_context: Option<bool>,
         thinking_budget_tokens: Option<u32>,
     ) -> Result<Self> {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(300))
-            .build()
-            .map_err(|e| anyhow!("Failed to create HTTP client: {}", e))?;
-
-        let model = model.unwrap_or_else(|| "claude-3-5-sonnet-20241022".to_string());
-
-        debug!("Initialized Anthropic provider with model: {}", model);
-
-        Ok(Self {
-            client,
-            name: "anthropic".to_string(),
-            api_key,
-            model,
-            max_tokens: max_tokens.unwrap_or(32768),
-            temperature: temperature.unwrap_or(0.1),
-            cache_config,
-            enable_1m_context: enable_1m_context.unwrap_or(false),
-            thinking_budget_tokens,
-        })
+        Self::new_with_name("anthropic".to_string(), api_key, model, max_tokens, temperature, cache_config, enable_1m_context, thinking_budget_tokens)
     }
 
     /// Create a new AnthropicProvider with a custom name (e.g., "anthropic.default")
@@ -222,10 +203,7 @@ impl AnthropicProvider {
         builder
     }
 
-    fn convert_cache_control(cache_control: &crate::CacheControl) -> crate::CacheControl {
-        // Anthropic uses the same format, so just clone it
-        cache_control.clone()
-    }
+    // Anthropic uses the same CacheControl format — no conversion needed, just clone at call sites.
 
     fn convert_tools(&self, tools: &[Tool]) -> Vec<AnthropicTool> {
         tools
@@ -312,7 +290,7 @@ impl AnthropicProvider {
                             cache_control: message
                                 .cache_control
                                 .as_ref()
-                                .map(Self::convert_cache_control),
+                                .map(|cc| cc.clone()),
                         });
                     } else {
                         // Regular user message: images as top-level blocks, then text
@@ -330,7 +308,7 @@ impl AnthropicProvider {
                             cache_control: message
                                 .cache_control
                                 .as_ref()
-                                .map(Self::convert_cache_control),
+                                .map(|cc| cc.clone()),
                         });
                     }
 
@@ -349,7 +327,7 @@ impl AnthropicProvider {
                             cache_control: message
                                 .cache_control
                                 .as_ref()
-                                .map(Self::convert_cache_control),
+                                .map(|cc| cc.clone()),
                         });
                     }
 

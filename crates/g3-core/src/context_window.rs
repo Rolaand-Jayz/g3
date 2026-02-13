@@ -740,31 +740,7 @@ Format this as a detailed but concise summary that can be used to resume the con
 
     /// Find the end position of a JSON object.
     pub fn find_json_end(json_str: &str) -> Option<usize> {
-        let mut brace_count = 0;
-        let mut in_string = false;
-        let mut escape_next = false;
-
-        for (i, ch) in json_str.char_indices() {
-            if escape_next {
-                escape_next = false;
-                continue;
-            }
-
-            match ch {
-                '\\' => escape_next = true,
-                '"' if !escape_next => in_string = !in_string,
-                '{' if !in_string => brace_count += 1,
-                '}' if !in_string => {
-                    brace_count -= 1;
-                    if brace_count == 0 {
-                        return Some(i);
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        None
+        crate::utils::find_json_object_end(json_str)
     }
 }
 
