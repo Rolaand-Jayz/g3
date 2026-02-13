@@ -1,5 +1,5 @@
 # Workspace Memory
-> Updated: 2026-02-11T05:07:33Z | Size: 30.0k chars
+> Updated: 2026-02-12T05:23:04Z | Size: 31.1k chars
 
 ### Remember Tool Wiring
 - `crates/g3-core/src/tools/memory.rs` [0..5000] - `execute_remember()`, `get_memory_path()`, `merge_memory()`
@@ -460,3 +460,11 @@ Makes tool output responsive to terminal width - no line wrapping, with 4-char r
 - **Impact**: In a real session, 303k chars of tool input (101k tokens) were invisible to the tracker. Context showed 39% but actual was >100%. Compaction never triggered → API 400 error.
 - **Fix**: Added `estimate_message_tokens(message)` that sums content tokens + per-tool-call input tokens (chars/3 * 1.1 + 20 overhead). Updated `add_message_with_tokens()`, `recalculate_tokens()`, `clear_conversation()` to use it.
 - **Tests**: 7 unit tests in `context_window.rs`, 1 integration test in `mock_provider_integration_test.rs::test_tool_call_input_tokens_tracked_in_context_window`
+
+### Anthropic ToolResult Structured Content (2026-02-12)
+- `crates/g3-providers/src/anthropic.rs` [1058..1110] - `ToolResultContent` enum (Text | Blocks) with custom Serialize/Deserialize
+- `crates/g3-providers/src/anthropic.rs` [1078..1086] - `ToolResultBlock` enum (Image, Text) for structured content inside tool_result
+- `crates/g3-providers/src/anthropic.rs` [283..330] - `convert_messages()` User branch: images from read_image nested inside ToolResult content array, not as top-level Image blocks
+- **Root cause**: Anthropic API rejects top-level `Image` blocks mixed with `ToolResult` blocks in the same user message. Images must be inside `tool_result.content` array.
+- **Bug pattern**: `read_image` → images attached to tool result message → `convert_messages()` put images as top-level blocks → API 400 "tool_use ids without tool_result"
+- Tests: `test_tool_result_with_images_nested_inside`, `test_tool_result_without_images_uses_string_content`, `test_regular_user_message_with_images_uses_top_level_blocks`, `test_strip_orphaned_tool_use_works_with_structured_tool_result`
