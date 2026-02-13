@@ -1476,3 +1476,145 @@ async fn test_tool_call_input_tokens_tracked_in_context_window() {
         "recalculate_tokens() should agree with incrementally tracked used_tokens"
     );
 }
+
+/// Test: 1% safety buffer prevents "prompt is too long" API errors
+///
+/// Exact reproduction of the failure from the screenshot:
+///   "prompt is too long: 200089 tokens > 200000 maximum"
+///
+/// Our token estimation slightly undercounts (by ~0.05%) because:
+/// - Tool call overhead (name, id, JSON structure) is approximated at 20 tokens
+/// - The chars/3 * 1.1 heuristic for code/JSON can drift on certain content
+/// - Message framing tokens (role markers, separators) aren't fully counted
+///
+/// Over a long session with hundreds of tool calls, these small errors accumulate
+/// to ~89 tokens over the 200k limit. The 1% buffer (2000 tokens on a 200k window)
+/// absorbs this drift so we never send a request the API will reject.
+///
+/// This test fills a context window to near-capacity and verifies:
+/// 1. The buffered total_tokens is 99% of the requested size
+/// 2. percentage_used() reports against the buffered limit (not the raw provider limit)
+/// 3. A session that would be at 99.95% of the raw limit is at >100% of the buffered
+///    limit, meaning compaction/thinning would have already triggered
+#[tokio::test]
+async fn test_1pct_buffer_prevents_prompt_too_long_error() {
+    use g3_core::context_window::ContextWindow;
+    use g3_providers::MessageToolCall;
+
+    // Create a 200k context window (the Anthropic default)
+    let cw = ContextWindow::new(200_000);
+
+    // The buffer should reduce total_tokens by 1%
+    let expected_buffered = (200_000_f64 * 0.99) as u32; // 198_000
+    assert_eq!(
+        cw.total_tokens, expected_buffered,
+        "ContextWindow should apply 1% safety buffer: expected {}, got {}",
+        expected_buffered, cw.total_tokens,
+    );
+
+    // Now simulate the exact scenario from the screenshot:
+    // Fill the context to ~199,900 estimated tokens (99.95% of raw 200k)
+    // which is ~100.96% of the buffered 198k limit.
+    let mut cw = ContextWindow::new(200_000);
+
+    // Add system prompt (~6k tokens)
+    cw.add_message(Message::new(
+        MessageRole::System,
+        "You are G3, an AI programming agent. ".repeat(500), // ~18.5k chars → ~5k tokens
+    ));
+
+    // Add many tool call messages to accumulate tokens.
+    // Each tool call pair (assistant + tool result) adds ~800-1200 estimated tokens.
+    // We need ~194k more tokens to reach 99.95% of raw 200k.
+    let mut _total_messages = 1; // system message
+    let mut last_percentage = 0.0_f32;
+
+    for i in 0..500 {
+        // Assistant message with a tool call containing ~2k chars of JSON input
+        let large_input = serde_json::json!({
+            "file_path": format!("src/module_{}/recognizer.rs", i),
+            "diff": format!(
+                "@@ -1,10 +1,50 @@\n-old code\n+{}\n context\n",
+                format!("    pub fn process_form_{i}(&mut self) -> Result<(), Error> {{\n        // Implementation with detailed logic\n        let token = self.next_token()?;\n        match token {{\n            Token::Open => self.handle_open()?,\n            Token::Close => self.handle_close()?,\n            _ => return Err(Error::Unexpected(token)),\n        }}\n        Ok(())\n    }}\n").repeat(8)
+            ),
+        });
+
+        let mut assistant = Message::new(
+            MessageRole::Assistant,
+            format!("Applying changes to module {}.", i),
+        );
+        assistant.tool_calls.push(MessageToolCall {
+            id: format!("toolu_{:04}", i),
+            name: "str_replace".to_string(),
+            input: large_input,
+        });
+        cw.add_message(assistant);
+        _total_messages += 1;
+
+        // Tool result
+        let mut result = Message::new(
+            MessageRole::User,
+            format!("Tool result: Applied 1 hunk to src/module_{}/recognizer.rs", i),
+        );
+        result.tool_result_id = Some(format!("toolu_{:04}", i));
+        cw.add_message(result);
+        _total_messages += 1;
+
+        let pct = cw.percentage_used();
+
+        // Check: did we cross 100% of the BUFFERED limit?
+        // If so, the buffer is working — compaction would have triggered at 80%.
+        if pct >= 100.0 && last_percentage < 100.0 {
+            // Calculate what percentage of the RAW 200k limit we're at
+            let raw_percentage = (cw.used_tokens as f64 / 200_000.0) * 100.0;
+
+            // We should be UNDER the raw 200k limit even though we're over the buffered limit
+            assert!(
+                raw_percentage < 100.0,
+                "When crossing 100% of buffered limit, should still be under raw 200k. \
+                 Buffered: {:.2}%, Raw: {:.2}%, used: {}, buffered_total: {}, raw_total: 200000",
+                pct, raw_percentage, cw.used_tokens, cw.total_tokens,
+            );
+
+            // The gap between raw and buffered should be the ~1% buffer
+            let gap = 100.0 - raw_percentage;
+            assert!(
+                gap > 0.0 && gap < 2.0,
+                "Gap between raw limit and current usage should be 0-2% (the buffer). Got {:.2}%",
+                gap,
+            );
+        }
+
+        last_percentage = pct;
+
+        // Stop once we've exceeded the buffered limit
+        if pct > 101.0 {
+            break;
+        }
+    }
+
+    // Final assertions
+    assert!(
+        cw.percentage_used() > 100.0,
+        "Should have exceeded the buffered limit. Percentage: {:.1}%, used: {}, total: {}",
+        cw.percentage_used(), cw.used_tokens, cw.total_tokens,
+    );
+
+    // But we should NOT have exceeded the raw 200k limit by much (if at all)
+    // The ~89 token overshoot from the screenshot would be absorbed by the 2000-token buffer
+    let raw_overshoot = cw.used_tokens as i64 - 200_000;
+    assert!(
+        raw_overshoot < 2000,
+        "Should not overshoot raw 200k by more than the buffer size. Overshoot: {} tokens",
+        raw_overshoot,
+    );
+
+    // Compaction would have triggered at 80% of the buffered limit (158,400 tokens)
+    // which is 79.2% of the raw limit — well before any API error
+    let compaction_threshold_tokens = (cw.total_tokens as f64 * 0.80) as u32;
+    assert!(
+        compaction_threshold_tokens < 200_000,
+        "Compaction threshold ({} tokens) must be well under raw 200k limit",
+        compaction_threshold_tokens,
+    );
+}

@@ -84,9 +84,15 @@ pub struct ContextWindow {
 
 impl ContextWindow {
     pub fn new(total_tokens: u32) -> Self {
+        // Apply a 1% safety buffer to absorb token estimation drift.
+        // Our heuristic (chars/3 * 1.1 for code, chars/4 * 1.1 for text) slightly
+        // undercounts over long sessions with hundreds of tool calls. Without this
+        // buffer, accumulated drift of ~89 tokens caused API 400 errors:
+        //   "prompt is too long: 200089 tokens > 200000 maximum"
+        let buffered_tokens = (total_tokens as f64 * 0.99) as u32;
         Self {
             used_tokens: 0,
-            total_tokens,
+            total_tokens: buffered_tokens,
             cumulative_tokens: 0,
             conversation_history: Vec::new(),
             last_thinning_percentage: 0,
@@ -783,23 +789,65 @@ mod tests {
     fn test_new_context_window() {
         let cw = ContextWindow::new(100_000);
         assert_eq!(cw.used_tokens, 0);
-        assert_eq!(cw.total_tokens, 100_000);
+        assert_eq!(cw.total_tokens, 99_000); // 1% buffer: 100_000 * 0.99
         assert_eq!(cw.cumulative_tokens, 0);
         assert!(cw.conversation_history.is_empty());
     }
 
     #[test]
+    fn test_1pct_buffer_200k() {
+        // The exact scenario from the screenshot: 200k Anthropic context window
+        let cw = ContextWindow::new(200_000);
+        assert_eq!(cw.total_tokens, 198_000, "200k * 0.99 = 198k");
+    }
+
+    #[test]
+    fn test_1pct_buffer_zero() {
+        // Edge case: zero tokens should not underflow
+        let cw = ContextWindow::new(0);
+        assert_eq!(cw.total_tokens, 0);
+    }
+
+    #[test]
+    fn test_1pct_buffer_small() {
+        // Small context window: 100 * 0.99 = 99
+        let cw = ContextWindow::new(100);
+        assert_eq!(cw.total_tokens, 99);
+    }
+
+    #[test]
+    fn test_1pct_buffer_percentage_uses_buffered_total() {
+        // percentage_used() should report against the buffered limit
+        let mut cw = ContextWindow::new(200_000);
+        assert_eq!(cw.total_tokens, 198_000);
+
+        // Set used_tokens to 198_000 (100% of buffered, 99% of raw)
+        cw.used_tokens = 198_000;
+        let pct = cw.percentage_used();
+        assert!(
+            (pct - 100.0).abs() < 0.01,
+            "Should be ~100% of buffered limit, got {:.2}%",
+            pct,
+        );
+        // This means compaction triggers well before the raw API limit
+        assert!(cw.should_compact());
+    }
+
+    #[test]
     fn test_percentage_used() {
         let mut cw = ContextWindow::new(100);
+        // total_tokens is 99 after 1% buffer
         cw.used_tokens = 50;
-        assert!((cw.percentage_used() - 50.0).abs() < 0.01);
+        let expected = (50.0 / 99.0) * 100.0;
+        assert!((cw.percentage_used() - expected).abs() < 0.01);
     }
 
     #[test]
     fn test_remaining_tokens() {
         let mut cw = ContextWindow::new(100);
+        // total_tokens is 99 after 1% buffer
         cw.used_tokens = 30;
-        assert_eq!(cw.remaining_tokens(), 70);
+        assert_eq!(cw.remaining_tokens(), 69); // 99 - 30
     }
 
     #[test]

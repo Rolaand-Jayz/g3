@@ -94,7 +94,8 @@ fn test_percentage_based_on_used_tokens() {
 
     // Initially 0%
     assert_eq!(window.percentage_used(), 0.0);
-    assert_eq!(window.remaining_tokens(), 1000);
+    // After 1% buffer: total_tokens = 990
+    assert_eq!(window.remaining_tokens(), 990);
 
     // Add messages to increase used_tokens
     // A message with ~100 chars should be roughly 25-30 tokens
@@ -107,7 +108,7 @@ fn test_percentage_based_on_used_tokens() {
     assert!(percentage < 100.0, "percentage should be < 100");
     
     // remaining_tokens should decrease
-    assert!(window.remaining_tokens() < 1000, "remaining tokens should decrease");
+    assert!(window.remaining_tokens() < 990, "remaining tokens should decrease");
 }
 
 /// Test that the 80% compaction threshold works correctly.

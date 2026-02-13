@@ -22,7 +22,7 @@ fn test_task_result_basic_functionality() {
     // Test basic properties
     assert_eq!(result.response, response);
     assert_eq!(result.context_window.conversation_history.len(), 2);
-    assert_eq!(result.context_window.total_tokens, 10000);
+    assert_eq!(result.context_window.total_tokens, 9900); // 10000 * 0.99 (1% buffer)
 }
 
 #[test]
@@ -122,7 +122,7 @@ fn test_context_window_preservation() {
     let result = TaskResult::new("Response".to_string(), context.clone());
 
     // Verify context is preserved
-    assert_eq!(result.context_window.total_tokens, 5000);
+    assert_eq!(result.context_window.total_tokens, 4950); // 5000 * 0.99 (1% buffer)
     assert!(result.context_window.used_tokens > 1234); // Should have increased
     assert_eq!(result.context_window.conversation_history.len(), 5);
 

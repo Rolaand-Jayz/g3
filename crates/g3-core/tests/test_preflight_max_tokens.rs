@@ -98,14 +98,15 @@ fn test_context_window_available_tokens() {
     
     // 2.5% buffer calculation
     let buffer = (model_limit / 40).clamp(1000, 10000);
-    assert_eq!(buffer, 5000); // 200000/40 = 5000
+    // After 1% safety buffer: total_tokens = 198000, so 198000/40 = 4950
+    assert_eq!(buffer, 4950);
     
     let available = model_limit
         .saturating_sub(current_usage)
         .saturating_sub(buffer);
     
-    // 200000 - 180000 - 5000 = 15000
-    assert_eq!(available, 15000);
+    // 198000 - 180000 - 4950 = 13050
+    assert_eq!(available, 13050);
     
     // Capped at 10000 for summary
     let summary_max = available.min(10_000);
