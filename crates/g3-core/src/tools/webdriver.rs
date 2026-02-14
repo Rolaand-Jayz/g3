@@ -12,6 +12,38 @@ use crate::ToolCall;
 use super::executor::ToolContext;
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Chrome for Testing auto-detection
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Auto-detect Chrome for Testing binary at ~/.chrome-for-testing/.
+///
+/// When no `chrome_binary` is configured, this checks for a Chrome for Testing
+/// installation which is version-locked to the matching ChromeDriver, avoiding
+/// version mismatch errors caused by system Chrome auto-updating.
+fn detect_chrome_for_testing() -> Option<String> {
+    let home_str = std::env::var("HOME").ok()?;
+    let home = std::path::PathBuf::from(home_str);
+    let cft_dir = home.join(".chrome-for-testing");
+
+    // Check platform-specific directories
+    let candidates = [
+        cft_dir.join("chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"),
+        cft_dir.join("chrome-mac-x64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"),
+        // Linux paths
+        cft_dir.join("chrome-linux64/chrome"),
+    ];
+
+    for candidate in &candidates {
+        if candidate.exists() {
+            debug!("Auto-detected Chrome for Testing: {}", candidate.display());
+            return Some(candidate.to_string_lossy().into_owned());
+        }
+    }
+
+    None
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Port checking helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -138,12 +170,17 @@ async fn start_safari_driver<W: UiWriter>(ctx: &ToolContext<'_, W>) -> Result<St
 async fn start_chrome_driver<W: UiWriter>(ctx: &ToolContext<'_, W>) -> Result<String> {
     let port = ctx.config.webdriver.chrome_port;
 
+    // Resolve Chrome binary: use configured path, or auto-detect Chrome for Testing
+    let chrome_binary = ctx.config.webdriver.chrome_binary.clone()
+        .or_else(|| detect_chrome_for_testing());
+    let chrome_binary_ref = chrome_binary.as_deref();
+
     // Check if chromedriver is already running on this port
     let already_running = check_chromedriver_running(port).await;
     
     if already_running {
         // Try to connect to existing chromedriver
-        let driver_result = match &ctx.config.webdriver.chrome_binary {
+        let driver_result = match chrome_binary_ref {
             Some(binary) => {
                 g3_computer_control::ChromeDriver::with_port_headless_and_binary(port, Some(binary))
                     .await
@@ -203,7 +240,7 @@ async fn start_chrome_driver<W: UiWriter>(ctx: &ToolContext<'_, W>) -> Result<St
         tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
         // Try to connect to ChromeDriver in headless mode (with optional custom binary)
-        let driver_result = match &ctx.config.webdriver.chrome_binary {
+        let driver_result = match chrome_binary_ref {
             Some(binary) => {
                 g3_computer_control::ChromeDriver::with_port_headless_and_binary(port, Some(binary))
                     .await
