@@ -486,7 +486,7 @@ impl UiWriter for ConsoleUiWriter {
         self.hint_state.handle_hint(ToolParsingHint::Complete);
 
         // Handle file operation tools and other compact tools
-        let is_compact_tool = matches!(tool_name, "read_file" | "write_file" | "str_replace" | "remember" | "screenshot" | "coverage" | "rehydrate" | "code_search" | "plan_approve");
+        let is_compact_tool = matches!(tool_name, "read_file" | "write_file" | "str_replace" | "remember" | "screenshot" | "coverage" | "rehydrate" | "code_search" | "plan_approve" | "load_toolset");
         if !is_compact_tool {
             // Reset continuation tracking for non-compact tools
             *self.last_read_file_path.lock().unwrap() = None;
@@ -543,8 +543,15 @@ impl UiWriter for ConsoleUiWriter {
                     String::new()
                 }
             } else {
-                // For remember, screenshot, etc. - no path to show
-                String::new()
+                // For load_toolset, show the toolset name
+                if tool_name == "load_toolset" {
+                    args.iter().find(|(k, _)| k == "name")
+                        .map(|(_, v)| v.to_string())
+                        .unwrap_or_default()
+                } else {
+                    // For remember, screenshot, etc. - no path to show
+                    String::new()
+                }
             }
         } else {
             // Shorten path (project -> name/, workspace -> ./, home -> ~) then truncate if still long

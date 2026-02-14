@@ -75,6 +75,7 @@ pub fn format_tool_result_summary(
             | "rehydrate"
             | "code_search"
             | "plan_approve"
+            | "load_toolset"
     );
 
     if is_self_handled {
@@ -103,6 +104,7 @@ pub fn is_compact_tool(tool_name: &str) -> bool {
             | "rehydrate"
             | "code_search"
             | "plan_approve"
+            | "load_toolset"
     )
 }
 
@@ -131,6 +133,7 @@ fn format_compact_tool_summary(tool_name: &str, tool_result: &str) -> String {
         "rehydrate" => format_rehydrate_summary(tool_result),
         "code_search" => format_code_search_summary(tool_result),
         "plan_approve" => format_plan_approve_summary(tool_result),
+        "load_toolset" => format_load_toolset_summary(tool_result),
         _ => "✅ completed".to_string(),
     }
 }
@@ -537,6 +540,28 @@ pub fn format_plan_approve_summary(result: &str) -> String {
         format!("✅ approved rev {}", rev)
     } else {
         "✅ approved".to_string()
+    }
+}
+
+/// Format a load_toolset result summary.
+pub fn format_load_toolset_summary(result: &str) -> String {
+    // Result formats:
+    // "✅ Loaded toolset 'webdriver' with 8 tools:\n\n..."
+    // "✅ Toolset 'webdriver' is already loaded. You can use its tools."
+    // "❌ Unknown toolset 'foo'..."
+    if result.contains("❌") {
+        "❌ failed".to_string()
+    } else if result.contains("already loaded") {
+        "ℹ️ already loaded".to_string()
+    } else if let Some(start) = result.find("toolset '") {
+        let after = &result[start + 9..];
+        if let Some(end) = after.find('\'') {
+            let name = &after[..end];
+            return format!("🧩 loaded '{}'", name);
+        }
+        "🧩 loaded".to_string()
+    } else {
+        "🧩 loaded".to_string()
     }
 }
 
