@@ -847,20 +847,30 @@ pub async fn execute_plan_write<W: UiWriter>(
     let existing_plan = read_plan(session_id)?;
 
     if let Some(existing) = existing_plan {
-        // Preserve approved_revision from existing plan
-        plan.approved_revision = existing.approved_revision;
-        // Increment revision
-        plan.revision = existing.revision + 1;
+        if existing.is_complete() {
+            // Existing plan is fully complete (all items done/blocked).
+            // Treat the incoming plan as a fresh plan — don't carry over
+            // approved_revision or enforce item preservation.
+            debug!(
+                "Existing plan '{}' is complete — allowing fresh plan '{}'",
+                existing.plan_id, plan.plan_id
+            );
+        } else {
+            // Preserve approved_revision from existing plan
+            plan.approved_revision = existing.approved_revision;
+            // Increment revision
+            plan.revision = existing.revision + 1;
 
-        // If plan was approved, ensure checks are not removed
-        if existing.is_approved() {
-            // Verify all existing item IDs still exist
-            for existing_item in &existing.items {
-                if !plan.items.iter().any(|i| i.id == existing_item.id) {
-                    return Ok(format!(
-                        "❌ Cannot remove item '{}' from approved plan. Items can only be marked blocked, not removed.",
-                        existing_item.id
-                    ));
+            // If plan was approved, ensure checks are not removed
+            if existing.is_approved() {
+                // Verify all existing item IDs still exist
+                for existing_item in &existing.items {
+                    if !plan.items.iter().any(|i| i.id == existing_item.id) {
+                        return Ok(format!(
+                            "❌ Cannot remove item '{}' from approved plan. Items can only be marked blocked, not removed.",
+                            existing_item.id
+                        ));
+                    }
                 }
             }
         }
