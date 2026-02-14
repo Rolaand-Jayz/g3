@@ -907,7 +907,7 @@ async fn test_plan_approval_gate_blocks_unapproved_changes() {
     agent.set_working_dir(temp_path.to_string_lossy().to_string());
     
     // Enable plan mode (required for the gate check to run)
-    agent.set_plan_mode(true);
+    agent.set_plan_mode(true, Some(&temp_path.to_string_lossy()));
     
     // Create an unapproved plan for this session
     let mut plan = Plan::new("test-plan");
@@ -937,11 +937,9 @@ async fn test_plan_approval_gate_blocks_unapproved_changes() {
     
     assert!(result.is_ok(), "Task should complete (with blocking message): {:?}", result.err());
     
-    // The new file should NOT exist (it was reverted)
-    assert!(
-        !new_file_path.exists(),
-        "New file should have been reverted/deleted"
-    );
+    // The new file may or may not exist depending on whether write_file ran before the gate,
+    // but the gate must NOT delete/revert it. If it exists, that's fine.
+    // The important thing is the blocking message was returned.
     
     // Check that the blocking message was returned
     let history = &agent.get_context_window().conversation_history;

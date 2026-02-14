@@ -52,7 +52,7 @@ pub use skills::{Skill, discover_skills, generate_skills_prompt};
 #[cfg(test)]
 mod task_result_comprehensive_tests;
 use crate::ui_writer::UiWriter;
-use tools::plan::{check_plan_approval_gate, read_plan, ApprovalGateResult};
+use tools::plan::{check_plan_approval_gate, get_dirty_files, read_plan, ApprovalGateResult};
 
 #[cfg(test)]
 mod tilde_expansion_tests;
@@ -166,6 +166,8 @@ pub struct Agent<W: UiWriter> {
     acd_enabled: bool,
     /// Whether plan mode is active (gate blocks file changes without approved plan)
     in_plan_mode: bool,
+    /// Files that were already dirty when plan mode started (excluded from approval gate)
+    baseline_dirty_files: std::collections::HashSet<String>,
     /// Manager for async research tasks
     pending_research_manager: pending_research::PendingResearchManager,
     /// Set of toolset names that have been loaded in this session
@@ -224,6 +226,7 @@ impl<W: UiWriter> Agent<W> {
             auto_memory: false,
             acd_enabled: false,
             in_plan_mode: false,
+            baseline_dirty_files: std::collections::HashSet::new(),
             pending_research_manager: pending_research::PendingResearchManager::new(),
             loaded_toolsets: std::collections::HashSet::new(),
         }
@@ -1669,8 +1672,15 @@ impl<W: UiWriter> Agent<W> {
     }
 
     /// Enable or disable plan mode (blocks file changes without approved plan)
-    pub fn set_plan_mode(&mut self, enabled: bool) {
+    pub fn set_plan_mode(&mut self, enabled: bool, working_dir: Option<&str>) {
         self.in_plan_mode = enabled;
+        if enabled {
+            // Capture current dirty files as baseline so the approval gate
+            // won't block on files that were already dirty before plan mode.
+            self.baseline_dirty_files = get_dirty_files(working_dir);
+        } else {
+            self.baseline_dirty_files.clear();
+        }
     }
 
     /// Check if plan mode is active
@@ -3014,8 +3024,8 @@ Skip if nothing new. Be brief."#;
         // Check plan approval gate after tool execution (only in plan mode)
         if self.in_plan_mode {
             if let Some(session_id) = &self.session_id {
-            if let ApprovalGateResult::Blocked { message, .. } = 
-                check_plan_approval_gate(session_id, working_dir) 
+            if let ApprovalGateResult::Blocked { message } =
+                check_plan_approval_gate(session_id, working_dir, &self.baseline_dirty_files)
             {
                 // Return the blocking message instead of the tool result
                 return Ok(message);

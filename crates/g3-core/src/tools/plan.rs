@@ -10,6 +10,7 @@
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fmt;
 use std::path::PathBuf;
 use std::path::Path;
@@ -973,138 +974,125 @@ pub async fn execute_plan_approve<W: UiWriter>(
 pub enum ApprovalGateResult {
     /// No plan exists, or plan is approved - allow the operation
     Allowed,
-    /// Plan exists but not approved, and files were changed - blocked
+    /// Plan exists but not approved, and new files were changed - blocked (warn only, never revert)
     Blocked {
         /// Message to inject into the conversation
         message: String,
-        /// Files that were reverted
-        reverted_files: Vec<String>,
     },
     /// Not a git repository - skip the check
     NotGitRepo,
 }
 
-/// Check if file changes occurred without an approved plan, and revert them if so.
-/// 
-/// This function should be called after each tool execution when in plan mode.
-/// It checks `git status --porcelain` for changes, and if a plan exists but isn't
-/// approved, it reverts those changes and returns a blocking message.
-pub fn check_plan_approval_gate(session_id: &str, working_dir: Option<&str>) -> ApprovalGateResult {
+/// Get the set of dirty file paths from `git status --porcelain`.
+///
+/// Returns an empty set if not a git repo or if the command fails.
+/// Each entry is the file path as reported by git (relative to repo root).
+pub fn get_dirty_files(working_dir: Option<&str>) -> HashSet<String> {
     let dir = working_dir.unwrap_or(".");
-    
+    let output = std::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(dir)
+        .output();
+
+    let output = match output {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
+        _ => return HashSet::new(),
+    };
+
+    output
+        .lines()
+        .filter(|line| line.len() >= 3)
+        .map(|line| line[3..].trim().to_string())
+        .collect()
+}
+
+/// Check if file changes occurred without an approved plan.
+///
+/// This function should be called after each tool execution when in plan mode.
+/// It checks `git status --porcelain` for changes (excluding any files that were
+/// already dirty at baseline), and if a plan exists but isn't approved, returns a
+/// blocking message. **Never reverts or deletes files.**
+pub fn check_plan_approval_gate(
+    session_id: &str,
+    working_dir: Option<&str>,
+    baseline_dirty: &HashSet<String>,
+) -> ApprovalGateResult {
+    let dir = working_dir.unwrap_or(".");
+
     // Check if this is a git repository
     let git_check = std::process::Command::new("git")
         .args(["rev-parse", "--git-dir"])
         .current_dir(dir)
         .output();
-    
+
     if git_check.is_err() || !git_check.unwrap().status.success() {
         return ApprovalGateResult::NotGitRepo;
     }
-    
+
+    // Get current dirty files, excluding baseline
+    let current_dirty = get_dirty_files(working_dir);
+    let new_dirty: Vec<&String> = current_dirty
+        .iter()
+        .filter(|f| !baseline_dirty.contains(*f))
+        .collect();
+
     // Check if a plan exists and whether it's approved
     let plan = match read_plan(session_id) {
         Ok(Some(plan)) => plan,
         Ok(None) => {
-            // No plan exists - check if there are file changes that need blocking
-            let status_output = std::process::Command::new("git")
-                .args(["status", "--porcelain"])
-                .current_dir(dir)
-                .output();
-            
-            let output = match status_output {
-                Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
-                _ => return ApprovalGateResult::Allowed,
-            };
-            
-            if output.trim().is_empty() {
-                return ApprovalGateResult::Allowed; // No changes, allow
+            if new_dirty.is_empty() {
+                return ApprovalGateResult::Allowed;
             }
-            
-            // There are file changes but no plan - block and require plan creation
+
+            let files_list = new_dirty
+                .iter()
+                .map(|f| format!("  - {}", f))
+                .collect::<Vec<_>>()
+                .join("\n");
+
             return ApprovalGateResult::Blocked {
-                message: "⚠️ IMPLEMENTATION BLOCKED\n\n\
-                    You attempted to modify files without creating a plan first.\n\n\
-                    Before implementing, you must:\n\
-                    1. Create a plan with `plan_write`\n\
-                    2. Get the plan approved by the user\n\n\
-                    Do not attempt to implement until the plan is approved.".to_string(),
-                reverted_files: vec![],
+                message: format!(
+                    "⚠️ IMPLEMENTATION BLOCKED\n\n\
+                     File changes detected without a plan:\n\
+                     {}\n\n\
+                     Before implementing, you must:\n\
+                     1. Create a plan with `plan_write`\n\
+                     2. Get the plan approved by the user\n\n\
+                     Do not attempt to implement until the plan is approved.",
+                    files_list
+                ),
             };
         }
-        Err(_) => return ApprovalGateResult::Allowed,   // Can't read plan, allow (error case)
+        Err(_) => return ApprovalGateResult::Allowed, // Can't read plan, allow (error case)
     };
-    
+
     if plan.is_approved() {
         return ApprovalGateResult::Allowed;
     }
-    
-    // Plan exists but not approved - check for file changes
-    let status_output = std::process::Command::new("git")
-        .args(["status", "--porcelain"])
-        .current_dir(dir)
-        .output();
-    
-    let output = match status_output {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
-        _ => return ApprovalGateResult::Allowed, // Can't get status, allow
-    };
-    
-    if output.trim().is_empty() {
-        return ApprovalGateResult::Allowed; // No changes
-    }
-    
-    // Parse changed files and revert them
-    let mut reverted_files = Vec::new();
-    
-    for line in output.lines() {
-        if line.len() < 3 {
-            continue;
-        }
-        let status = &line[0..2];
-        let file_path = line[3..].trim();
-        
-        match status {
-            "??" => {
-                // Untracked file - remove it
-                let _ = std::fs::remove_file(std::path::Path::new(dir).join(file_path));
-                reverted_files.push(format!("{} (new file)", file_path));
-            }
-            _ => {
-                // Modified/added/deleted tracked file - git checkout
-                let _ = std::process::Command::new("git")
-                    .args(["checkout", "--", file_path])
-                    .current_dir(dir)
-                    .output();
-                reverted_files.push(format!("{} (modified)", file_path));
-            }
-        }
-    }
-    
-    if reverted_files.is_empty() {
+
+    if new_dirty.is_empty() {
         return ApprovalGateResult::Allowed;
     }
-    
-    let files_list = reverted_files.iter()
+
+    let files_list = new_dirty
+        .iter()
         .map(|f| format!("  - {}", f))
         .collect::<Vec<_>>()
         .join("\n");
-    
+
     let message = format!(
         "⚠️ IMPLEMENTATION BLOCKED\n\n\
-         You modified files without an approved plan:\n\
+         File changes detected without an approved plan:\n\
          {}\n\n\
-         These changes have been reverted.\n\n\
          Before implementing, you must:\n\
          1. Create a plan with `plan_write`\n\
          2. Request the user's explicit approval or edits to plan\n\n\
          Do not attempt to implement until the plan is approved.",
         files_list
     );
-    
+
     ApprovalGateResult::Blocked {
         message,
-        reverted_files,
     }
 }
 
@@ -1454,7 +1442,7 @@ items: []
             .current_dir(temp_dir.path())
             .output()
             .unwrap();
-        let result = check_plan_approval_gate("nonexistent-session-xyz", Some(temp_dir.path().to_str().unwrap()));
+        let result = check_plan_approval_gate("nonexistent-session-xyz", Some(temp_dir.path().to_str().unwrap()), &HashSet::new());
         assert!(matches!(result, ApprovalGateResult::Allowed));
     }
 
@@ -1470,11 +1458,11 @@ items: []
         // Create an untracked file to simulate changes
         std::fs::write(temp_dir.path().join("new_file.txt"), "test content").unwrap();
         
-        let result = check_plan_approval_gate("nonexistent-session-xyz", Some(temp_dir.path().to_str().unwrap()));
+        let result = check_plan_approval_gate("nonexistent-session-xyz", Some(temp_dir.path().to_str().unwrap()), &HashSet::new());
         assert!(matches!(result, ApprovalGateResult::Blocked { .. }));
         
         // Verify the blocking message mentions creating a plan
-        if let ApprovalGateResult::Blocked { message, .. } = result {
+        if let ApprovalGateResult::Blocked { message } = result {
             assert!(message.contains("plan_write"));
         }
     }
@@ -1482,7 +1470,118 @@ items: []
     #[test]
     fn test_approval_gate_not_git_repo() {
         // /tmp is typically not a git repo
-        let result = check_plan_approval_gate("any-session", Some("/tmp"));
+        let result = check_plan_approval_gate("any-session", Some("/tmp"), &HashSet::new());
         assert!(matches!(result, ApprovalGateResult::NotGitRepo));
+    }
+
+    #[test]
+    fn test_approval_gate_warns_without_reverting() {
+        // Dirty files should appear in the warning message but NOT be deleted/reverted.
+        let temp_dir = tempfile::tempdir().unwrap();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(temp_dir.path())
+            .output()
+            .unwrap();
+        // Create an untracked file
+        let file_path = temp_dir.path().join("should_survive.txt");
+        std::fs::write(&file_path, "precious content").unwrap();
+
+        let result = check_plan_approval_gate(
+            "nonexistent-session-xyz",
+            Some(temp_dir.path().to_str().unwrap()),
+            &HashSet::new(),
+        );
+        assert!(matches!(result, ApprovalGateResult::Blocked { .. }));
+
+        // The file must still exist on disk — gate must NOT delete it
+        assert!(file_path.exists(), "Gate must not delete untracked files");
+        assert_eq!(
+            std::fs::read_to_string(&file_path).unwrap(),
+            "precious content"
+        );
+    }
+
+    #[test]
+    fn test_approval_gate_excludes_baseline() {
+        // Files in the baseline set should be excluded from the gate check.
+        let temp_dir = tempfile::tempdir().unwrap();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(temp_dir.path())
+            .output()
+            .unwrap();
+        // Create a file that will be in the baseline
+        std::fs::write(temp_dir.path().join("pre_existing.txt"), "old content").unwrap();
+
+        // Baseline includes this file
+        let baseline: HashSet<String> = ["pre_existing.txt".to_string()].into_iter().collect();
+
+        let result = check_plan_approval_gate(
+            "nonexistent-session-xyz",
+            Some(temp_dir.path().to_str().unwrap()),
+            &baseline,
+        );
+        // Only baseline files are dirty → should be Allowed
+        assert!(matches!(result, ApprovalGateResult::Allowed));
+    }
+
+    #[test]
+    fn test_approval_gate_blocks_new_files_with_baseline() {
+        // Baseline files are excluded, but new files should still trigger blocking.
+        let temp_dir = tempfile::tempdir().unwrap();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(temp_dir.path())
+            .output()
+            .unwrap();
+        // Pre-existing file (in baseline)
+        std::fs::write(temp_dir.path().join("pre_existing.txt"), "old").unwrap();
+        // New file (not in baseline)
+        std::fs::write(temp_dir.path().join("new_file.txt"), "new").unwrap();
+
+        let baseline: HashSet<String> = ["pre_existing.txt".to_string()].into_iter().collect();
+
+        let result = check_plan_approval_gate(
+            "nonexistent-session-xyz",
+            Some(temp_dir.path().to_str().unwrap()),
+            &baseline,
+        );
+        assert!(matches!(result, ApprovalGateResult::Blocked { .. }));
+
+        if let ApprovalGateResult::Blocked { message } = result {
+            // Should mention the new file but NOT the baseline file
+            assert!(message.contains("new_file.txt"), "Should mention new file");
+            assert!(!message.contains("pre_existing.txt"), "Should NOT mention baseline file");
+        }
+
+        // Both files must still exist
+        assert!(temp_dir.path().join("pre_existing.txt").exists());
+        assert!(temp_dir.path().join("new_file.txt").exists());
+    }
+
+    #[test]
+    fn test_get_dirty_files_returns_file_paths() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(temp_dir.path())
+            .output()
+            .unwrap();
+        std::fs::write(temp_dir.path().join("a.txt"), "a").unwrap();
+        std::fs::write(temp_dir.path().join("b.txt"), "b").unwrap();
+
+        let dirty = get_dirty_files(Some(temp_dir.path().to_str().unwrap()));
+        assert!(dirty.contains("a.txt"));
+        assert!(dirty.contains("b.txt"));
+        assert!(!dirty.contains("c.txt"));
+    }
+
+    #[test]
+    fn test_get_dirty_files_non_git_repo() {
+        // Non-git directory should return empty set without error
+        let temp_dir = tempfile::tempdir().unwrap();
+        let dirty = get_dirty_files(Some(temp_dir.path().to_str().unwrap()));
+        assert!(dirty.is_empty());
     }
 }

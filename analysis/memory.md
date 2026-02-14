@@ -1,5 +1,5 @@
 # Workspace Memory
-> Updated: 2026-02-13 | Size: ~20k chars
+> Updated: 2026-02-14T22:33:04Z | Size: 22.9k chars
 
 ### Remember Tool Wiring
 - `crates/g3-core/src/tools/memory.rs` [0..5686]
@@ -388,3 +388,12 @@ Tool output responsive to terminal width — no line wrapping, 4-char right marg
   - `print_tool_output_header()` [293..410] - uses compress_path/compress_command
   - `update_tool_output_line()` [407..445], `print_tool_output_line()` [447..454] - clip_line()
   - `print_tool_compact()` [475..635] - width-aware compact display
+
+### Plan Approval Gate (Non-Destructive + Baseline-Aware)
+- `crates/g3-core/src/tools/plan.rs` [973..983] - `ApprovalGateResult` enum: `Allowed`, `Blocked { message }`, `NotGitRepo` — no `reverted_files` field
+- `crates/g3-core/src/tools/plan.rs` [985..1003] - `get_dirty_files()` - returns `HashSet<String>` of dirty file paths from `git status --porcelain`
+- `crates/g3-core/src/tools/plan.rs` [1005..1098] - `check_plan_approval_gate(session_id, working_dir, baseline_dirty)` - warn-only, never reverts/deletes files, excludes baseline dirty files
+- `crates/g3-core/src/lib.rs` [170..171] - `baseline_dirty_files: HashSet<String>` field on Agent
+- `crates/g3-core/src/lib.rs` [1675..1686] - `set_plan_mode(enabled, working_dir)` - captures baseline on enable, clears on disable
+- **Key invariant**: The approval gate NEVER deletes or reverts files. It only warns.
+- **Key invariant**: Pre-existing dirty files (captured at plan mode start) are excluded from gate checks.

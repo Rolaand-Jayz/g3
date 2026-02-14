@@ -95,7 +95,7 @@ fn check_and_exit_plan_mode_if_terminal<W: UiWriter>(
     if *in_plan_mode && agent.is_plan_terminal() {
         output.print("\n📋 Plan complete - exiting plan mode");
         *in_plan_mode = false;
-        agent.set_plan_mode(false);
+        agent.set_plan_mode(false, None);
         return true;
     }
     false
@@ -159,7 +159,7 @@ pub async fn run_interactive<W: UiWriter>(
     let mut is_first_plan_message = in_plan_mode;
     
     // Sync agent's plan mode state with CLI state
-    agent.set_plan_mode(in_plan_mode);
+    agent.set_plan_mode(in_plan_mode, Some(workspace_path.to_str().unwrap_or(".")));
 
     // Initialize rustyline editor with history
     let config = Config::builder()
@@ -282,7 +282,7 @@ pub async fn run_interactive<W: UiWriter>(
                             }
                             CommandResult::EnterPlanMode => {
                                 in_plan_mode = true;
-                                agent.set_plan_mode(true);
+                                agent.set_plan_mode(true, Some(workspace_path.to_str().unwrap_or(".")));
                                 is_first_plan_message = true;
                                 continue;
                             }
@@ -322,7 +322,7 @@ pub async fn run_interactive<W: UiWriter>(
                 if in_plan_mode {
                     output.print("CTRL-D (exiting plan mode)");
                     in_plan_mode = false;
-                    agent.set_plan_mode(false);
+                    agent.set_plan_mode(false, None);
                     // Continue the loop with normal prompt
                     continue;
                 } else {
