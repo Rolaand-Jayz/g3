@@ -214,7 +214,7 @@ fn create_core_tools() -> Vec<Tool> {
             "properties": {
                 "plan": {
                     "type": "string",
-                    "description": "The plan as YAML. Must include plan_id and items array."
+                    "description": "The plan as YAML. Must include plan_id and items array.\n\nWhen marking items done, `evidence` must be a list of verifiable file references — NOT free-form descriptions. Each entry is verified against the filesystem.\n\nAccepted evidence formats:\n- `src/foo.rs` — file path (checked: file exists)\n- `src/foo.rs:42` or `src/foo.rs:42-118` — file + line range (checked: file exists, lines in range)\n- `tests/foo.rs::test_bar` — test reference (checked: file exists, function found)\n\n❌ Do NOT put descriptions, summaries, or prose in evidence. Use `notes` for explanations."
                 }
             },
             "required": ["plan"]
