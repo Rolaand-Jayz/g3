@@ -185,6 +185,10 @@ impl ChromeDriver {
                 Value::String("--lang=en-US,en".to_string()),
                 // Stealth: Disable extensions to avoid detection
                 Value::String("--disable-extensions".to_string()),
+                // Prevent first-run UI and default browser check popups
+                Value::String("--no-first-run".to_string()),
+                Value::String("--no-default-browser-check".to_string()),
+                Value::String("--disable-popup-blocking".to_string()),
             ]),
         );
 

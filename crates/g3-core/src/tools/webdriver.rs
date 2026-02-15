@@ -43,6 +43,34 @@ fn detect_chrome_for_testing() -> Option<String> {
     None
 }
 
+/// Auto-detect ChromeDriver for Testing binary at ~/.chrome-for-testing/.
+///
+/// When no `chromedriver_binary` is configured, this checks for a Chrome for
+/// Testing chromedriver installation which is version-locked to the matching
+/// Chrome for Testing browser, avoiding version mismatch errors.
+fn detect_chromedriver_for_testing() -> Option<String> {
+    let home_str = std::env::var("HOME").ok()?;
+    let home = std::path::PathBuf::from(home_str);
+    let cft_dir = home.join(".chrome-for-testing");
+
+    // Check platform-specific directories
+    let candidates = [
+        cft_dir.join("chromedriver-mac-arm64/chromedriver"),
+        cft_dir.join("chromedriver-mac-x64/chromedriver"),
+        // Linux paths
+        cft_dir.join("chromedriver-linux64/chromedriver"),
+    ];
+
+    for candidate in &candidates {
+        if candidate.exists() {
+            debug!("Auto-detected ChromeDriver for Testing: {}", candidate.display());
+            return Some(candidate.to_string_lossy().into_owned());
+        }
+    }
+
+    None
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Port checking helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -170,8 +198,12 @@ async fn start_safari_driver<W: UiWriter>(ctx: &ToolContext<'_, W>) -> Result<St
 async fn start_chrome_driver<W: UiWriter>(ctx: &ToolContext<'_, W>) -> Result<String> {
     let port = ctx.config.webdriver.chrome_port;
 
-    // Resolve Chrome binary: use configured path, or auto-detect Chrome for Testing
-    let chrome_binary = ctx.config.webdriver.chrome_binary.clone()
+    // Resolve Chrome binary: use configured path (with tilde expansion), or auto-detect Chrome for Testing
+    let chrome_binary = ctx.config.webdriver.chrome_binary.as_deref()
+        .map(|p| {
+            let expanded = shellexpand::tilde(p);
+            expanded.into_owned()
+        })
         .or_else(|| detect_chrome_for_testing());
     let chrome_binary_ref = chrome_binary.as_deref();
 
@@ -201,11 +233,14 @@ async fn start_chrome_driver<W: UiWriter>(ctx: &ToolContext<'_, W>) -> Result<St
         // If connection failed, fall through to start a new one
     }
 
-    // Use configured chromedriver binary or fall back to 'chromedriver' in PATH
-    let chromedriver_cmd = ctx
-        .config
-        .webdriver
-        .chromedriver_binary
+    // Resolve chromedriver binary: use configured path (with tilde expansion), auto-detect Chrome for Testing, or fall back to PATH
+    let chromedriver_auto = ctx.config.webdriver.chromedriver_binary.as_deref()
+        .map(|p| {
+            let expanded = shellexpand::tilde(p);
+            expanded.into_owned()
+        })
+        .or_else(|| detect_chromedriver_for_testing());
+    let chromedriver_cmd = chromedriver_auto
         .as_deref()
         .unwrap_or("chromedriver");
 
