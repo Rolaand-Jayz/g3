@@ -105,6 +105,13 @@ impl ChromeDiagnosticReport {
 
 /// Run all Chrome headless diagnostics
 pub fn run_diagnostics(config_chrome_binary: Option<&str>) -> ChromeDiagnosticReport {
+    // Expand tilde in the configured chrome_binary path so that paths like
+    // "~/.chrome-for-testing/..." resolve correctly when checking existence.
+    // Keep the original value for display purposes in the report summary.
+    let expanded_binary = config_chrome_binary
+        .map(|p| shellexpand::tilde(p).into_owned());
+    let effective_binary = expanded_binary.as_deref();
+
     let mut results = Vec::new();
     let mut chrome_version = None;
     let mut chromedriver_version = None;
@@ -120,10 +127,10 @@ pub fn run_diagnostics(config_chrome_binary: Option<&str>) -> ChromeDiagnosticRe
     results.push(chromedriver_check);
 
     // 2. Check for Chrome installation
-    let chrome_check = check_chrome_installed(config_chrome_binary);
+    let chrome_check = check_chrome_installed(effective_binary);
     if chrome_check.status == DiagnosticStatus::Ok {
-        chrome_path = find_chrome_path(config_chrome_binary);
-        chrome_version = get_chrome_version(config_chrome_binary);
+        chrome_path = find_chrome_path(effective_binary);
+        chrome_version = get_chrome_version(effective_binary);
     }
     results.push(chrome_check);
 
@@ -136,7 +143,7 @@ pub fn run_diagnostics(config_chrome_binary: Option<&str>) -> ChromeDiagnosticRe
     }
 
     // 4. Check config.toml chrome_binary setting
-    results.push(check_config_chrome_binary(config_chrome_binary, chrome_path.as_ref()));
+    results.push(check_config_chrome_binary(effective_binary, chrome_path.as_ref()));
 
     // 5. Check for Chrome for Testing installation
     results.push(check_chrome_for_testing());
@@ -152,6 +159,7 @@ pub fn run_diagnostics(config_chrome_binary: Option<&str>) -> ChromeDiagnosticRe
         chromedriver_version,
         chrome_path,
         chromedriver_path,
+        // Show the original (unexpanded) config value in the report summary
         config_chrome_binary: config_chrome_binary.map(String::from),
     }
 }
