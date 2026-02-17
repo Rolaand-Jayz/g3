@@ -1875,6 +1875,124 @@ fn test_mixed_formatting_inside_header() {
 }
 
 /// Helper to strip ANSI escape codes for easier assertion
+
+#[test]
+fn test_header_with_inline_code_streaming_no_linebreak() {
+    let mut fmt = make_formatter();
+
+    // This is the exact pattern from the bug: header with inline code mid-line
+    // e.g., "## Bug Fix (`src/main.rs`)\n"
+    // When streamed char-by-char, the closing backtick used to trigger early emit
+    // of the header (with trailing \n), causing `)` to appear on a new line.
+    let input = "## Bug Fix (`src/main.rs`)\n";
+
+    let mut full_output = String::new();
+    for ch in input.chars() {
+        full_output.push_str(&fmt.process(&ch.to_string()));
+    }
+    full_output.push_str(&fmt.finish());
+
+    eprintln!("Input: {:?}", input);
+    eprintln!("Output: {:?}", full_output);
+
+    let without_ansi = strip_ansi(&full_output);
+    eprintln!("Without ANSI: {:?}", without_ansi);
+
+    // The header text should be on a single line — no spurious line break
+    // after the closing backtick
+    assert!(
+        without_ansi.contains("Bug Fix (src/main.rs)"),
+        "Header should render on a single line without line break after inline code, got: {:?}",
+        without_ansi
+    );
+
+    // Should NOT have the closing paren on its own line
+    assert!(
+        !without_ansi.contains(")\n)"),
+        "Closing paren should not be on a separate line"
+    );
+}
+
+#[test]
+fn test_header_with_bold_mid_line_streaming() {
+    let mut fmt = make_formatter();
+
+    // Header with bold text followed by more text
+    let input = "## Found **critical** issue in module\n";
+
+    let mut full_output = String::new();
+    for ch in input.chars() {
+        full_output.push_str(&fmt.process(&ch.to_string()));
+    }
+    full_output.push_str(&fmt.finish());
+
+    eprintln!("Input: {:?}", input);
+    eprintln!("Output: {:?}", full_output);
+
+    let without_ansi = strip_ansi(&full_output);
+
+    // All text should be on one line
+    assert!(
+        without_ansi.contains("Found critical issue in module"),
+        "Header should render on a single line, got: {:?}",
+        without_ansi
+    );
+}
+
+#[test]
+fn test_header_with_multiple_inline_elements_streaming() {
+    let mut fmt = make_formatter();
+
+    // Header with multiple inline elements — each closing delimiter must not
+    // trigger early emission
+    let input = "# **Bold** and `code` here\n";
+
+    let mut full_output = String::new();
+    for ch in input.chars() {
+        full_output.push_str(&fmt.process(&ch.to_string()));
+    }
+    full_output.push_str(&fmt.finish());
+
+    eprintln!("Input: {:?}", input);
+    eprintln!("Output: {:?}", full_output);
+
+    let without_ansi = strip_ansi(&full_output);
+
+    // Everything on one line
+    assert!(
+        without_ansi.contains("Bold and code here"),
+        "Header with multiple inline elements should be on one line, got: {:?}",
+        without_ansi
+    );
+}
+
+#[test]
+fn test_header_with_inline_code_at_end_streaming() {
+    let mut fmt = make_formatter();
+
+    // Header where inline code is the very last thing — no trailing text
+    // This should still work (boundary case)
+    let input = "### See `README.md`\n";
+
+    let mut full_output = String::new();
+    for ch in input.chars() {
+        full_output.push_str(&fmt.process(&ch.to_string()));
+    }
+    full_output.push_str(&fmt.finish());
+
+    eprintln!("Input: {:?}", input);
+    eprintln!("Output: {:?}", full_output);
+
+    let without_ansi = strip_ansi(&full_output);
+
+    // Should contain the text on one line, properly formatted
+    assert!(
+        without_ansi.contains("See README.md"),
+        "Header with inline code at end should render correctly, got: {:?}",
+        without_ansi
+    );
+}
+
 fn strip_ansi(s: &str) -> String {
     let re = regex::Regex::new(r"\x1b\[[0-9;]*m").unwrap();
     re.replace_all(s, "").to_string()

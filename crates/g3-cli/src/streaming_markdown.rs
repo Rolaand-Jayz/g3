@@ -385,7 +385,11 @@ impl StreamingMarkdownFormatter {
             let could_be_hr = self.current_line.chars().all(|c| c == '*' || c == '-' || c == '_')
                 && self.current_line.len() >= 2;  // At least ** or -- or __
             
-            if self.delimiter_stack.is_empty() && !in_potential_link && !could_be_hr {
+            // Don't emit yet if we're inside a header - headers must be emitted
+            // as a complete line at newline, otherwise trailing text after the
+            // closing delimiter ends up on a new line (format_header adds \n)
+            let in_header = self.current_line.starts_with('#');
+            if self.delimiter_stack.is_empty() && !in_potential_link && !could_be_hr && !in_header {
                 self.emit_formatted_inline();
             }
         } else {
