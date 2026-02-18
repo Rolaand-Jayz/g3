@@ -34,9 +34,7 @@ fn colorize_str_replace_summary(summary: &str) -> String {
 }
 
 /// ANSI color codes for tool names
-const TOOL_COLOR_NORMAL: &str = "\x1b[32m";
 const TOOL_COLOR_NORMAL_BOLD: &str = "\x1b[1;32m";
-const TOOL_COLOR_AGENT: &str = "\x1b[38;5;250m";
 const TOOL_COLOR_AGENT_BOLD: &str = "\x1b[1;38;5;250m";
 
 /// Blink state values for the streaming indicator
@@ -96,9 +94,9 @@ impl ParsingHintState {
 
                 // Get color based on agent mode
                 let tool_color = if self.is_agent_mode.load(Ordering::Relaxed) {
-                    TOOL_COLOR_AGENT
+                    TOOL_COLOR_AGENT_BOLD
                 } else {
-                    TOOL_COLOR_NORMAL
+                    TOOL_COLOR_NORMAL_BOLD
                 };
                 
                 // Print the indicator: " ● tool_name |"
@@ -593,7 +591,7 @@ impl UiWriter for ConsoleUiWriter {
         };
 
         // Color for tool name
-        let tool_color = if is_agent_mode { TOOL_COLOR_AGENT } else { TOOL_COLOR_NORMAL };
+        let tool_color = if is_agent_mode { TOOL_COLOR_AGENT_BOLD } else { TOOL_COLOR_NORMAL_BOLD };
 
         // Colorize summary for str_replace (green insertions, red deletions)
         let display_summary = if tool_name == "str_replace" {
@@ -666,7 +664,7 @@ impl UiWriter for ConsoleUiWriter {
         self.hint_state.handle_hint(ToolParsingHint::Complete);
 
         let is_agent_mode = self.hint_state.is_agent_mode.load(Ordering::Relaxed);
-        let tool_color = if is_agent_mode { TOOL_COLOR_AGENT } else { TOOL_COLOR_NORMAL };
+        let tool_color = if is_agent_mode { TOOL_COLOR_AGENT_BOLD } else { TOOL_COLOR_NORMAL_BOLD };
 
         // Add blank line if last output was text (for visual separation)
         if self.hint_state.last_output_was_text.load(Ordering::Relaxed) {
@@ -730,7 +728,7 @@ impl UiWriter for ConsoleUiWriter {
         self.hint_state.handle_hint(ToolParsingHint::Complete);
 
         let is_agent_mode = self.hint_state.is_agent_mode.load(Ordering::Relaxed);
-        let tool_color = if is_agent_mode { TOOL_COLOR_AGENT } else { TOOL_COLOR_NORMAL };
+        let tool_color = if is_agent_mode { TOOL_COLOR_AGENT_BOLD } else { TOOL_COLOR_NORMAL_BOLD };
 
         // Add blank line if last output was text (for visual separation)
         if self.hint_state.last_output_was_text.load(Ordering::Relaxed) {
