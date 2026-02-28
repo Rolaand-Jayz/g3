@@ -905,6 +905,60 @@ impl UiWriter for ConsoleUiWriter {
         true
     }
 
+    fn print_envelope_compact(&self, fact_groups: usize, stages: &[(&str, &str)], passed: Option<usize>, total: Option<usize>, failed: usize) {
+        // Clear any streaming hint
+        self.hint_state.handle_hint(ToolParsingHint::Complete);
+
+        let is_agent_mode = self.hint_state.is_agent_mode.load(Ordering::Relaxed);
+        let tool_color = if is_agent_mode { TOOL_COLOR_AGENT_BOLD } else { TOOL_COLOR_NORMAL_BOLD };
+
+        // Add blank line if last output was text
+        if self.hint_state.last_output_was_text.load(Ordering::Relaxed) {
+            println!();
+        }
+        self.hint_state.last_output_was_text.store(false, Ordering::Relaxed);
+        self.hint_state.last_output_was_tool.store(true, Ordering::Relaxed);
+        *self.last_read_file_path.lock().unwrap() = None;
+
+        // Header: " ● write_envelope | N fact groups"
+        let facts_label = if fact_groups == 1 { "fact group" } else { "fact groups" };
+        println!(
+            " \x1b[2m●\x1b[0m {}{:<width$}\x1b[0m \x1b[2m|\x1b[0m \x1b[35m{} {}\x1b[0m",
+            tool_color, "write_envelope", fact_groups, facts_label, width = TOOL_NAME_PADDING
+        );
+
+        // Pipeline stages
+        let stages_len = stages.len();
+        // Determine if we need to show a verification summary line after stages
+        let has_verification = passed.is_some();
+
+        for (i, (icon, desc)) in stages.iter().enumerate() {
+            let is_last = i == stages_len - 1 && !has_verification;
+            let prefix = if is_last { "└" } else { "├" };
+            println!("   \x1b[2m{}\x1b[0m {} \x1b[2m{}\x1b[0m", prefix, icon, desc);
+        }
+
+        // Verification summary line (if rulespec was present)
+        if let (Some(p), Some(t)) = (passed, total) {
+            if failed == 0 {
+                println!(
+                    "   \x1b[2m└\x1b[0m \x1b[32m✓ {}/{} passed\x1b[0m",
+                    p, t
+                );
+            } else {
+                println!(
+                    "   \x1b[2m└\x1b[0m \x1b[31m✗ {}/{} passed, {} failed\x1b[0m",
+                    p, t, failed
+                );
+            }
+        }
+
+        println!();
+
+        // Clear tool state
+        self.clear_tool_state();
+    }
+
     fn print_tool_timing(&self, duration_str: &str, tokens_delta: u32, context_percentage: f32) {
         let color_code = duration_color(duration_str);
 

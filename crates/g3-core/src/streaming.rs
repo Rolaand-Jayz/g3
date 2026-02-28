@@ -111,7 +111,8 @@ pub fn is_compact_tool(tool_name: &str) -> bool {
 pub fn is_self_handled_tool(tool_name: &str) -> bool {
     matches!(tool_name, 
         "todo_read" | "todo_write" | 
-        "plan_read" | "plan_write"
+        "plan_read" | "plan_write" |
+        "write_envelope"
     )
 }
 

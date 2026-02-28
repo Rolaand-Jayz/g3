@@ -26,7 +26,7 @@ use crate::ToolCall;
 
 use super::executor::ToolContext;
 use super::invariants::{
-    format_envelope_markdown, get_envelope_path, read_envelope, read_rulespec,
+    read_envelope, read_rulespec,
     write_envelope, ActionEnvelope, Rulespec,
 };
 use super::datalog::{
@@ -232,12 +232,31 @@ pub fn verify_token(session_id: &str, working_dir: &Path) -> Result<bool> {
 }
 
 // ============================================================================
+// Envelope Verification
+// ============================================================================
+
+/// Result of the envelope verification pipeline.
+pub struct VerifyResult {
+    /// Pipeline stages completed: (flat_icon, description)
+    pub stages: Vec<(String, String)>,
+    /// Number of predicates that passed (None if no rulespec)
+    pub passed: Option<usize>,
+    /// Total number of predicates (None if no rulespec)
+    pub total: Option<usize>,
+    /// Number of predicates that failed
+    pub failed: usize,
+    /// Short summary for LLM context
+    pub llm_summary: String,
+}
+
+// ============================================================================
 // Tool Implementation
 // ============================================================================
 
 /// Execute the `write_envelope` tool.
 ///
-/// Accepts YAML facts, writes the action envelope, and runs verification.
+/// Accepts YAML facts, writes the action envelope, runs verification,
+/// and displays a compact pipeline summary via the UI writer.
 pub async fn execute_write_envelope<W: UiWriter>(
     tool_call: &ToolCall,
     ctx: &mut ToolContext<'_, W>,
@@ -246,28 +265,25 @@ pub async fn execute_write_envelope<W: UiWriter>(
 
     let session_id = match ctx.session_id {
         Some(id) => id,
-        None => return Ok("❌ No active session - envelopes are session-scoped.".to_string()),
+        None => return Ok("Error: No active session - envelopes are session-scoped.".to_string()),
     };
 
     // Get the facts YAML from args
     let facts_yaml = match tool_call.args.get("facts").and_then(|v| v.as_str()) {
         Some(f) => f,
-        None => return Ok("❌ Missing 'facts' argument. Provide the envelope facts as YAML.".to_string()),
+        None => return Ok("Error: Missing 'facts' argument. Provide the envelope facts as YAML.".to_string()),
     };
 
     // Parse the YAML into an ActionEnvelope
     let envelope: ActionEnvelope = match serde_yaml::from_str(facts_yaml) {
         Ok(e) => e,
-        Err(e) => return Ok(format!("❌ Invalid envelope YAML: {}", e)),
+        Err(e) => return Ok(format!("Error: Invalid envelope YAML: {}", e)),
     };
 
-    // Validate that facts is non-empty. This catches the common mistake where
-    // the agent sends a raw YAML map without the required `facts:` top-level key.
-    // serde silently ignores unknown fields and defaults `facts` to an empty HashMap,
-    // so we must check explicitly.
+    // Validate that facts is non-empty
     if envelope.facts.is_empty() {
         return Ok(
-            "❌ Envelope has empty facts. The YAML must contain a non-empty `facts` top-level key. Example:\n\n\
+            "Error: Envelope has empty facts. The YAML must contain a non-empty `facts` top-level key. Example:\n\n\
              ```yaml\n\
              facts:\n\
              \x20 my_feature:\n\
@@ -279,134 +295,161 @@ pub async fn execute_write_envelope<W: UiWriter>(
 
     // Write the envelope to disk (without verified token initially)
     if let Err(e) = write_envelope(session_id, &envelope) {
-        return Ok(format!("❌ Failed to write envelope: {}", e));
+        return Ok(format!("Error: Failed to write envelope: {}", e));
     }
 
-    let envelope_path = get_envelope_path(session_id);
-    let mut output = format!(
-        "✅ Envelope written: {}\n{}",
-        envelope_path.display(),
-        format_envelope_markdown(&envelope),
-    );
+    let fact_groups = envelope.facts.len();
 
-    // Run verification against rulespec (shadow mode)
+    // Run verification pipeline
     let effective_wd = ctx.working_dir
         .map(Path::new)
         .unwrap_or_else(|| Path::new("."));
-    let verification_note = verify_envelope(session_id, effective_wd);
-    output.push_str(&verification_note);
+    let vr = verify_envelope(session_id, effective_wd);
 
-    Ok(output)
+    // Display compact pipeline via UI writer
+    let stage_refs: Vec<(&str, &str)> = vr.stages.iter()
+        .map(|(icon, desc)| (icon.as_str(), desc.as_str()))
+        .collect();
+    ctx.ui_writer.print_envelope_compact(fact_groups, &stage_refs, vr.passed, vr.total, vr.failed);
+
+    Ok(vr.llm_summary)
 }
 
 // ============================================================================
-// Envelope Verification
+// Envelope Verification Pipeline
 // ============================================================================
 
 /// Verify the action envelope against the compiled rulespec using datalog.
 ///
-/// This is the core verification step that:
-/// 1. Reads `analysis/rulespec.yaml` from the working directory
-/// 2. Compiles it into datalog relations
-/// 3. Loads the envelope from the session
-/// 4. Extracts facts and runs datalog rules
-/// 5. Writes results to session artifacts (shadow mode - stderr + files)
-/// 6. If all predicates pass, stamps the envelope with a verification token
-///
-/// Returns a short status string for inclusion in tool output.
-pub fn verify_envelope(session_id: &str, working_dir: &Path) -> String {
+/// Returns a `VerifyResult` with pipeline stages and verification counts.
+/// Stages are displayed as compact lines with flat icons.
+pub fn verify_envelope(session_id: &str, working_dir: &Path) -> VerifyResult {
+    let mut stages: Vec<(String, String)> = Vec::new();
+
+    // Stage 1: envelope written
+    stages.push(("✎".into(), "envelope written".into()));
+
     // Read rulespec from analysis/rulespec.yaml
     let rulespec = match read_rulespec(working_dir) {
         Ok(Some(rs)) => rs,
         Ok(None) => {
-            eprintln!("\nℹ️  No analysis/rulespec.yaml found - skipping datalog verification");
-            return "\nℹ️  No rulespec found — skipping invariant verification.\n".to_string();
+            eprintln!("  -- no analysis/rulespec.yaml found, skipping verification");
+            return VerifyResult {
+                stages,
+                passed: None, total: None, failed: 0,
+                llm_summary: "Envelope written. No rulespec — skipping verification.".into(),
+            };
         }
         Err(e) => {
-            eprintln!("\n⚠️  Failed to read analysis/rulespec.yaml: {}", e);
-            return format!("\n⚠️  Failed to read rulespec: {}\n", e);
+            eprintln!("  !! failed to read rulespec: {}", e);
+            return VerifyResult {
+                stages,
+                passed: None, total: None, failed: 0,
+                llm_summary: format!("Envelope written. Failed to read rulespec: {}", e),
+            };
         }
     };
 
-    // Compile rulespec on-the-fly
+    // Stage 2: compile rulespec
     let compiled = match compile_rulespec(&rulespec, "envelope-verify", 0) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("\n⚠️  Failed to compile rulespec: {}", e);
-            return format!("\n⚠️  Failed to compile rulespec: {}\n", e);
+            eprintln!("  !! failed to compile rulespec: {}", e);
+            return VerifyResult {
+                stages,
+                passed: None, total: None, failed: 0,
+                llm_summary: format!("Envelope written. Failed to compile rulespec: {}", e),
+            };
         }
     };
 
     if compiled.is_empty() {
-        eprintln!("\nℹ️  Rulespec has no predicates - skipping datalog verification");
-        return "\nℹ️  Rulespec has no predicates — skipping invariant verification.\n".to_string();
+        eprintln!("  -- rulespec has no predicates, skipping verification");
+        return VerifyResult {
+            stages,
+            passed: None, total: None, failed: 0,
+            llm_summary: "Envelope written. Rulespec has no predicates.".into(),
+        };
     }
 
-    // Load envelope
+    let pred_count = compiled.predicates.len();
+    stages.push(("\u{2699}".into(), format!("rulespec compiled ({} predicates)", pred_count)));
+
+    // Load envelope back from disk (to verify what was actually written)
     let envelope = match read_envelope(session_id) {
         Ok(Some(e)) => e,
         Ok(None) => {
-            eprintln!("\n⚠️  No envelope found - skipping datalog verification");
-            return "\n⚠️  No envelope found — skipping invariant verification.\n".to_string();
+            eprintln!("  !! no envelope found after write");
+            return VerifyResult {
+                stages,
+                passed: None, total: None, failed: 0,
+                llm_summary: "Envelope written but could not be re-read for verification.".into(),
+            };
         }
         Err(e) => {
-            eprintln!("\n⚠️  Failed to load envelope: {}", e);
-            return format!("\n⚠️  Failed to load envelope: {}\n", e);
+            eprintln!("  !! failed to load envelope: {}", e);
+            return VerifyResult {
+                stages,
+                passed: None, total: None, failed: 0,
+                llm_summary: format!("Envelope written but failed to re-read: {}", e),
+            };
         }
     };
 
-    // Extract facts from envelope
+    // Extract facts and execute datalog rules
     let facts = extract_facts(&envelope, &compiled);
-
-    // Execute datalog rules
     let result = execute_rules(&compiled, &facts);
 
-    // Format results
-    let output = format_datalog_results(&result);
-
+    // Write artifacts to session dir (shadow mode)
     let session_dir = get_session_logs_dir(session_id);
-
-    // Write compiled rules to .dl file
     let dl_path = session_dir.join("rulespec.compiled.dl");
     let datalog_program = format_datalog_program(&compiled, &facts);
     if let Err(e) = std::fs::write(&dl_path, &datalog_program) {
-        eprintln!("⚠️  Failed to write compiled rules: {}", e);
+        eprintln!("  !! failed to write compiled rules: {}", e);
     }
-
-    // Write evaluation report
+    let eval_output = format_datalog_results(&result);
     let eval_path = session_dir.join("datalog_evaluation.txt");
-    match std::fs::write(&eval_path, &output) {
-        Ok(_) => {
-            eprintln!("📊 Compiled rules: {}", dl_path.display());
-            eprintln!("📊 Evaluation report: {}", eval_path.display());
-        }
-        Err(e) => {
-            eprintln!("⚠️  Failed to write datalog evaluation: {}", e);
-        }
+    if let Err(e) = std::fs::write(&eval_path, &eval_output) {
+        eprintln!("  !! failed to write evaluation report: {}", e);
     }
 
-    // If all predicates passed, stamp the envelope with a verification token
-    if result.failed_count == 0 && result.passed_count > 0 {
+    // Stage 3: verification result
+    let total = result.passed_count + result.failed_count;
+    let passed = result.passed_count;
+    let failed = result.failed_count;
+
+    if failed == 0 {
+        stages.push(("\u{2713}".into(), format!("verified {}/{}", passed, total)));
+    } else {
+        stages.push(("\u{2717}".into(), format!("verified {}/{}, {} failed", passed, total, failed)));
+    }
+
+    // Stage 4: stamp if all passed
+    if failed == 0 && passed > 0 {
         match stamp_envelope(session_id, &envelope, &rulespec) {
             Ok(_) => {
-                eprintln!("🔏 Envelope stamped with verification token");
+                stages.push(("\u{2235}".into(), "token stamped".into()));
+                eprintln!("  -- envelope stamped with verification token");
             }
             Err(e) => {
-                eprintln!("⚠️  Failed to stamp envelope: {}", e);
+                eprintln!("  !! failed to stamp envelope: {}", e);
             }
         }
     }
 
-    // Summary for tool output (token value intentionally omitted — LLM must not see it)
-    let total = result.passed_count + result.failed_count;
-    if result.failed_count == 0 {
-        format!(
-            "\n✅ Invariant verification: {}/{} passed\n", result.passed_count, total,
-        )
+    // LLM summary (token value intentionally omitted)
+    let llm_summary = if failed == 0 {
+        format!("Envelope written. Verification: {}/{} passed.", passed, total)
     } else {
-        format!(
-            "\n⚠️  Invariant verification: {}/{} passed, {} failed\n", result.passed_count, total, result.failed_count,
-        )
+        format!("Envelope written. Verification: {}/{} passed, {} failed.", passed, total, failed)
+    };
+
+    VerifyResult {
+        stages,
+        passed: Some(passed as usize),
+        total: Some(total as usize),
+        failed: failed as usize,
+        llm_summary,
     }
 }
 

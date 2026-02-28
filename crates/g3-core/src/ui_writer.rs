@@ -78,6 +78,17 @@ pub trait UiWriter: Send + Sync {
         false
     }
 
+    /// Print a compact write_envelope output showing pipeline stages.
+    /// Displays: envelope written → rulespec compiled → verification → token stamped
+    /// fact_groups: number of top-level fact groups in the envelope
+    /// stages: list of (flat_icon, description) pairs for each completed stage
+    /// passed: number of predicates that passed (None if no rulespec)
+    /// total: total number of predicates (None if no rulespec)
+    /// failed: number of predicates that failed
+    fn print_envelope_compact(&self, _fact_groups: usize, _stages: &[(& str, &str)], _passed: Option<usize>, _total: Option<usize>, _failed: usize) {
+        // Default: no-op (NullUiWriter inherits this)
+    }
+
     /// Print tool execution timing
     fn print_tool_timing(&self, duration_str: &str, tokens_delta: u32, context_percentage: f32);
 
